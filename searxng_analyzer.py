@@ -168,6 +168,7 @@ Now extract and return **only** in this exact format using the content below:
 def generate_description(company_name, text=""):
     """
     Always returns a short, accurate company description.
+    Enforces exactly 5–6 lines.
     Uses Wikipedia fallback automatically.
     """
 
@@ -176,15 +177,14 @@ def generate_description(company_name, text=""):
 
     prompt = f"""
 You are an expert business analyst.
-Based on the following web content, write a concise, factual, and professional company description suitable for a pitch deck or investor report.
 
-Include:
-- What the company does
-- Its target customers or market
-- Its value proposition
-- Key differentiators (if mentioned)
+Based on the content below, write a concise, factual, and professional company description suitable for a pitch deck or investor report.
 
-Keep it under 150 words. Focus only on available information.
+Rules:
+1. Include what the company does, its target market/customers, value proposition, and key differentiators.
+2. The description must be exactly **5-6 lines** (no more, no less). 
+3. Do not add extra sentences or commentary.
+4. Focus only on available information. 
 
 Content:
 {text[:6000]}
@@ -199,6 +199,21 @@ Content:
         result = openrouter_chat("openai/gpt-4o-mini", prompt.replace(text, wiki_text), "Company Description Generator")
 
     if not result or len(result.strip()) < 20:
-        result = f"{company_name} is a company providing products or services in its respective industry."
+        # Safe default, 5 lines placeholder
+        result = (
+            f"{company_name} is a company providing products or services in its industry.\n"
+            "It serves a defined customer base and market.\n"
+            "The company offers unique value propositions.\n"
+            "It differentiates itself from competitors.\n"
+            "It aims to grow and innovate continually."
+        )
 
-    return result
+    # Ensure exactly 5–6 lines
+    lines = result.strip().split("\n")
+    if len(lines) < 5:
+        # Pad with empty lines
+        lines += [""] * (5 - len(lines))
+    elif len(lines) > 6:
+        lines = lines[:6]
+
+    return "\n".join(lines)

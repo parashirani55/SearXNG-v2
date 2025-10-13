@@ -71,65 +71,115 @@ if st.button("🚀 Analyze Company"):
     if not search_query.strip():
         st.warning("⚠️ Please enter a company name or URL")
     else:
-        progress_placeholder = st.empty()
-        progress_bar = st.progress(0)
+        progress = st.progress(0)
+        status = st.empty()
 
         summary = ""
         description = ""
+        company_details = ""
         content_to_use = ""
 
-        # Progress simulation
-        for i, msg in enumerate(PROGRESS_MESSAGES):
-            progress_placeholder.markdown(f"**{msg}**")
-            progress_bar.progress((i + 1) / len(PROGRESS_MESSAGES))
-            time.sleep(random.uniform(0.6, 1.2))
+        try:
+            # --- Step 1: Wikipedia ---
+            status.text("📘 Reading company background...")
+            wiki_text = get_wikipedia_summary(search_query)
+            content_to_use = wiki_text
+            progress.progress(20)
 
-        # Step 1: Wikipedia or fallback
-        wiki_text = get_wikipedia_summary(search_query)
-        content_to_use = wiki_text
+            # --- Step 2: GPT Company Details Extraction ---
+            status.text("🧠 Extracting company structure...")
+            summary = generate_summary(search_query, text=wiki_text)
+            progress.progress(40)
 
-        # Step 2: AI summaries
-        summary = generate_summary(search_query, text=wiki_text)
-        description = generate_description(search_query, text=wiki_text)
+            # --- Step 3: Check for missing fields ---
+            required_fields = ["CEO", "Founder", "Headquarters", "Website", "Year Founded", "LinkedIn"]
+            missing = [field for field in required_fields if f"{field}:" in summary and summary.split(f"{field}:")[1].strip() == ""]
+            
+            if missing:
+                status.text("🔍 Searching for missing info...")
+                fix_prompt = f"""
+You are an expert data researcher.
+We are missing the following fields for **{search_query}**: {', '.join(missing)}.
 
-        # Step 3: Website fallback if Wikipedia/AI insufficient
-        if not summary.strip() or not description.strip() or len(description.strip().splitlines()) < 5:
-            base_url = page1_links[0] if 'page1_links' in locals() and page1_links else ""
-            if base_url:
-                website_text = scrape_website(base_url=base_url, company_name=search_query)
+Find accurate, up-to-date info for these fields ONLY.
+Format your answer exactly as:
+- Field: Value
+- Field: Value
+(no extra text)
+                """
+                from searxng_analyzer import openrouter_chat
+                missing_filled = openrouter_chat("openai/gpt-4o-mini", fix_prompt, "Missing Field Finder")
+                if missing_filled:
+                    for line in missing_filled.split("\n"):
+                        if ":" in line:
+                            key, val = line.split(":", 1)
+                            summary = summary.replace(f"{key.strip()}:", f"{key.strip()}: {val.strip()}")
+            progress.progress(60)
+
+            # --- Step 4: Website fallback if fields still missing ---
+            still_missing = [field for field in required_fields if f"{field}:" in summary and summary.split(f"{field}:")[1].strip() == ""]
+            if still_missing:
+                status.text("🌐 Exploring company website...")
+                from searxng_crawler import scrape_website
+
+                base_urls = [
+                    f"https://{search_query.lower().replace(' ', '')}.com/about",
+                    f"https://{search_query.lower().replace(' ', '')}.com/about-us",
+                    f"https://{search_query.lower().replace(' ', '')}.com/company",
+                    f"https://{search_query.lower().replace(' ', '')}.com/who-we-are",
+                    f"https://{search_query.lower().replace(' ', '')}.com/leadership",
+                    f"https://{search_query.lower().replace(' ', '')}.com/team"
+                ]
+
+                website_text = ""
+                for url in base_urls:
+                    try:
+                        site_text = scrape_website(base_url=url, company_name=search_query)
+                        if site_text and len(site_text) > len(website_text):
+                            website_text = site_text
+                    except:
+                        continue
+
                 if website_text.strip():
                     summary = generate_summary(search_query, text=website_text)
-                    description = generate_description(search_query, text=website_text)
+                    description = generate_description(search_query, text=website_text, company_details=summary)
                     content_to_use = website_text
+            progress.progress(80)
 
-        # Step 4: Show result or error
-        progress_bar.progress(1.0)
-        progress_placeholder.empty()
+            # --- Step 5: Final description ---
+            if not description.strip():
+                status.text("📝 Writing company profile...")
+                description = generate_description(search_query, text=wiki_text, company_details=summary)
+            progress.progress(100)
 
-        if not summary.strip() and not description.strip():
-            st.error("❌ Unable to fetch company data from available sources.")
-        else:
-            store_report(search_query, summary, description)
-            store_search(search_query, content_to_use, summary, description)
+            # --- Step 6: Validation ---
+            missing_final = [field for field in required_fields if f"{field}:" in summary and summary.split(f"{field}:")[1].strip() == ""]
+            if missing_final:
+                st.error("❌ No complete data found for this company even after retries.")
+            else:
+                store_report(search_query, summary, description)
+                store_search(search_query, content_to_use, summary, description)
 
-            st.success("✅ Analysis Complete")
+                st.success("✅ Company data successfully fetched!")
+                st.subheader("📈 Valuation Summary Report")
+                st.markdown(summary)
 
-            st.subheader("📈 Valuation Summary Report")
-            st.markdown(summary)
+                st.subheader("🏢 Company Description (5–6 lines)")
+                st.text(description)
 
-            st.subheader("🏢 Company Description (5–6 lines)")
-            st.markdown(description)
+                pdf_file = create_pdf_from_text(
+                    title=search_query,
+                    summary=f"{description}\n\n{summary}"
+                )
+                st.download_button(
+                    label="📄 Download PDF",
+                    data=pdf_file,
+                    file_name=f"{search_query.replace(' ','_')}.pdf",
+                    mime="application/pdf"
+                )
 
-            pdf_file = create_pdf_from_text(
-                title=search_query,
-                summary=f"{description}\n\n{summary}"
-            )
-            st.download_button(
-                label="📄 Download PDF",
-                data=pdf_file,
-                file_name=f"{search_query.replace(' ','_')}.pdf",
-                mime="application/pdf"
-            )
+        except Exception as e:
+            st.error(f"⚠️ Error during analysis: {e}")
 
 # --- Previous Reports ---
 st.divider()

@@ -4,7 +4,7 @@ import os
 
 # Local imports
 from searxng_crawler import scrape_website  # Updated with Wikipedia fallback
-from searxng_analyzer import generate_summary
+from searxng_analyzer import generate_summary, generate_description
 from searxng_db import store_report, get_reports, store_search, get_search_history
 from searxng_pdf import create_pdf_from_text  # Unicode-safe PDF
 from serpapi import GoogleSearch
@@ -30,9 +30,6 @@ search_query = st.text_input(
     "🔎 Enter company/topic (or paste URL directly)",
     placeholder="Google, ChatGPT, or https://example.com",
 )
-
-# --- Initialize selected URLs ---
-selected_urls = []
 
 # --- Search Logic ---
 if st.button("Search"):
@@ -71,75 +68,82 @@ if st.button("Search"):
             except Exception as e:
                 st.error(f"Error fetching search results: {e}")
 
-# --- Display Search Results ---
+# --- Display URLs to be analyzed ---
 if st.session_state.get('search_results'):
-    st.subheader("Select URLs to Analyze")
-
+    st.subheader("🔗 URLs to be Analyzed (Page 1 Results)")
     for res in st.session_state['search_results']:
-        checkbox_label = f"{res['title']} ({res['link']})"
-        key_id = res.get('id', len(selected_urls))  # fallback
+        st.markdown(f"- [{res['title']}]({res['link']})")
 
-        if st.checkbox(checkbox_label, key=f"chk_{key_id}"):
-            selected_urls.append(res['link'])
-
-        if res.get('snippet'):
-            st.markdown(f"*{res['snippet']}*")
-
-        st.markdown("---")
-
-# --- Analyze Selected URLs or GPT fallback ---
-if (selected_urls or search_query) and st.button("🚀 Analyze Selected URLs / Generate Report"):
-    if not selected_urls:
-        # If no URL selected, just use GPT with search_query as fallback
-        scraped_text = scrape_website(base_url=None, company_name=search_query, use_js_fallback=False)
-        urls_to_process = [search_query]
-    else:
-        urls_to_process = selected_urls
+# --- Analyze All URLs ---
+if st.session_state.get('search_results') and st.button("🚀 Analyze All Page 1 Links"):
+    urls_to_process = [res['link'] for res in st.session_state['search_results']]
+    total_urls = len(urls_to_process)
+    progress_bar = st.progress(0)
 
     for idx, url in enumerate(urls_to_process):
         with st.spinner(f"Analyzing {url} ..."):
             try:
-                if selected_urls:
-                    scraped_text = scrape_website(base_url=url, company_name=search_query)
+                scraped_text = scrape_website(base_url=url, company_name=search_query)
 
+                if not scraped_text:
+                    st.warning(f"No content scraped from {url}. Skipping analysis.")
+                    continue
+
+                # AI Analysis
                 summary = generate_summary(scraped_text)
+                description = generate_description(scraped_text)
 
-                # Save to database
-                store_report(url, summary)
-                store_search(search_query, scraped_text, summary)
+                # Save to DB
+                store_report(url, summary, description)
+                store_search(search_query, scraped_text, summary, description)
 
-                # Display summary
-                st.markdown(f"### 📌 {url}")
-                st.markdown(summary)
+                # Display Results in Collapsible Expander
+                with st.expander(f"📌 {url}"):
+                    st.subheader("📈 Valuation Summary Report")
+                    st.write(summary)
 
-                pdf_file = create_pdf_from_text(title=url, summary=summary)
-                st.download_button(
-                    label="📄 Download PDF",
-                    data=pdf_file,
-                    file_name=f"{url.replace('https://','').replace('/','_')}.pdf",
-                    mime="application/pdf",
-                    key=f"download_new_{idx}_{url}"
-                )
+                    st.subheader("🏢 Company Description")
+                    st.write(description)
+
+                    # PDF Download
+                    combined_text = f"Company Description:\n{description}\n\nValuation Summary:\n{summary}"
+                    pdf_file = create_pdf_from_text(title=url, summary=combined_text)
+                    st.download_button(
+                        label="📄 Download PDF",
+                        data=pdf_file,
+                        file_name=f"{url.replace('https://','').replace('/','_')}.pdf",
+                        mime="application/pdf",
+                        key=f"download_{idx}_{url}"
+                    )
+
+                # Update progress bar
+                progress = (idx + 1) / total_urls
+                progress_bar.progress(progress)
 
             except Exception as e:
                 st.error(f"Error analyzing {url}: {e}")
+
+    progress_bar.empty()
 
 st.divider()
 
 # --- Previous Valuation Reports ---
 st.subheader("🗂️ Previous Valuation Reports")
 reports = get_reports()
-
 if not reports:
     st.info("No saved reports yet.")
 else:
     for idx, r in enumerate(reports):
         with st.expander(f"📊 {r.get('company', 'Unknown Company')}"):
-            st.markdown(r.get('summary', 'No summary available.'))
+            st.subheader("📈 Valuation Summary Report")
+            st.write(r.get('summary', 'No summary available.'))
+
+            st.subheader("🏢 Company Description")
+            st.write(r.get('description', 'No description available.'))
 
             pdf_file = create_pdf_from_text(
                 title=r.get('company', 'Report'),
-                summary=r.get('summary', '')
+                summary=f"{r.get('description','')}\n\n{r.get('summary','')}"
             )
 
             st.download_button(
@@ -152,28 +156,34 @@ else:
 
 st.divider()
 
-# --- Previous Search History ---
+# --- Previous Search History (one entry per query) ---
 st.subheader("🕘 Previous Search History")
 history = get_search_history()
-
 if not history:
     st.info("No previous searches yet.")
 else:
+    seen_queries = set()
     for idx, h in enumerate(history):
-        with st.expander(f"🔎 {h.get('query', 'Unknown Query')}"):
+        query = h.get('query', 'Unknown Query')
+        if query in seen_queries:
+            continue
+        seen_queries.add(query)
+
+        with st.expander(f"🔎 {query}"):
             raw_text = h.get('results', '')[:500] + "..."
             st.markdown(f"**Raw Results:**\n{raw_text}")
+            st.markdown(f"**AI Description:**\n{h.get('description', '')}")
             st.markdown(f"**AI Summary:**\n{h.get('summary', '')}")
 
             pdf_file = create_pdf_from_text(
-                title=h.get('query', 'Search'),
-                summary=h.get('summary', '')
+                title=query,
+                summary=f"{h.get('description','')}\n\n{h.get('summary','')}"
             )
 
             st.download_button(
                 label="📄 Download PDF",
                 data=pdf_file,
-                file_name=f"{h.get('query', 'search').replace(' ', '_')}.pdf",
+                file_name=f"{query.replace(' ', '_')}.pdf",
                 mime="application/pdf",
                 key=f"download_history_{idx}"
             )

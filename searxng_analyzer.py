@@ -92,72 +92,70 @@ def openrouter_chat(model, prompt, title):
 # ============================================================
 def generate_summary(company_name, text=""):
     """
-    Always returns a well-structured Company Details summary.
-    Automatically uses Wikipedia if needed.
+    Always returns a complete, structured Company Details summary.
+    Ensures CEO, HQ, and Website fields are filled by fallback AI if missing.
     """
 
-    # --- Ensure some base content to analyze ---
     if not text.strip():
         text = get_wikipedia_summary(company_name)
 
-    # --- AI extraction prompt ---
-    prompt = f"""
-You are an expert company information extractor.
+    # --- Step 1: Base extraction prompt ---
+    base_prompt = f"""
+You are a professional company data researcher.
+Your job is to extract key company details **accurately and completely**.
 
-Your job is to **always return a structured Company Details summary** — even if the input text is short, incomplete, or unclear.
-Do not explain what you are doing or ask for more information.
-If a value cannot be confidently found, leave that field blank (but still include it).
+If the input text does not include all fields, you must **use your own knowledge** to fill in any missing ones.
+If the company is not found or uncertain, return exactly "NO DETAILS FOUND".
 
----
+Return ONLY in this markdown format:
 
-### 🧾 Extract the Following Fields:
-1. **Year Founded**
-2. **Website**
-3. **LinkedIn**
-4. **Headquarters (HQ)**
-5. **CEO / Key Executive**
-
----
-
-### 🧩 Output Rules:
-- Always use the **exact markdown format** shown below.  
-- Do **not** add commentary, explanations, or disclaimers.  
-- If info is missing, still include the field but leave blank.  
-
----
-
-### ✅ Output Format Example
 **Company Details**
-- Year Founded: 1907  
-- Website: https://www.shell.com  
-- LinkedIn: https://linkedin.com/company/shell  
-- Headquarters: The Hague, Netherlands  
-- CEO: Wael Sawan  
+- Year Founded: <value>
+- Website: <value>
+- LinkedIn: <value>
+- Headquarters: <value>
+- CEO: <value>
 
----
+Do not add explanations or commentary.
 
-Now extract and return **only** in this exact format using the content below:
+Company name: {company_name}
 
+Source text:
 {text[:8000]}
 """
 
-    result = openrouter_chat("openai/gpt-4o-mini", prompt, "Company Info Extractor")
+    # --- Step 2: First AI call ---
+    result = openrouter_chat("openai/gpt-4o-mini", base_prompt, "Company Info Extractor")
 
-    # Fallback: if AI gives empty output → use Wikipedia directly
-    if not result or len(result.strip()) < 20:
-        print("🔍 Fallback to Wikipedia...")
-        wiki_text = get_wikipedia_summary(company_name)
-        result = openrouter_chat("openai/gpt-4o-mini", prompt.replace(text, wiki_text), "Company Info Extractor")
+    # --- Step 3: Retry if any field missing or blank ---
+    def field_missing(output):
+        required_fields = ["Year Founded:", "Website:", "LinkedIn:", "Headquarters:", "CEO:"]
+        for field in required_fields:
+            if field not in output or f"{field}  " in output or f"{field} \n" in output:
+                return True
+        return False
 
-    # Last resort: safe default
-    if not result or len(result.strip()) < 20:
-        result = f"""**Company Details**
-- Year Founded:  
-- Website:  
-- LinkedIn:  
-- Headquarters:  
-- CEO:  
+    if not result or len(result.strip()) < 30 or field_missing(result):
+        print("🔁 Retrying with direct GPT lookup (forcing all fields)...")
+        enforce_prompt = f"""
+You are a company researcher AI. Your goal is to ensure that all fields below are **always filled** 
+for the company "{company_name}". Use general knowledge if missing from text.
+
+If you cannot find verified data after trying, return exactly "NO DETAILS FOUND".
+
+**Company Details**
+- Year Founded:
+- Website:
+- LinkedIn:
+- Headquarters:
+- CEO:
 """
+        result = openrouter_chat("openai/gpt-4o-mini", enforce_prompt, "Company Info Enforcer")
+
+    # --- Step 4: If still missing, fail gracefully ---
+    if not result or "NO DETAILS FOUND" in result.upper() or field_missing(result):
+        print("❌ No reliable details found.")
+        return "❌ No details found."
 
     return result
 

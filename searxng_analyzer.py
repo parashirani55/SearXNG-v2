@@ -1,7 +1,6 @@
 import os
 import requests
-from urllib.parse import urljoin, quote
-from bs4 import BeautifulSoup
+from urllib.parse import quote
 from dotenv import load_dotenv
 import re
 from datetime import datetime
@@ -275,28 +274,44 @@ def generate_corporate_events(company_name, text=""):
     return final_output if final_output else f"⚠️ No verified corporate events found for {company_name}."
 
 # ============================================================
-# 🧩 Helper: Wikipedia Summary
+# 🧩 Helper: Safe Wikipedia Fetcher
 # ============================================================
 def get_wikipedia_summary(company_name):
     """
     Fetches a company summary from Wikipedia with smart fallback.
     Ensures no wrong or empty results.
     """
-    try:
-        # Step 1: Direct API attempt
-        encoded_name = quote(company_name)
-        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded_name}"
-        r = requests.get(url, timeout=6)
-        if r.status_code == 200:
-            data = r.json()
-            if (
-                "extract" in data
-                and data["extract"].strip()
-                and data.get("type") != "disambiguation"
-            ):
-                return data["extract"]
+    def try_fetch(url, retries=3, delay=1):
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        for attempt in range(retries):
+            try:
+                r = requests.get(url, headers=headers, timeout=6)
+                r.raise_for_status()
+                return r
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed for {url}: {e}")
+                if attempt < retries - 1:
+                    time.sleep(delay)
+        return None
 
-        # fallback search
+    try:
+        # Step 1: Direct API attempt with improved encoding for & and other chars
+        encoded_name = quote(company_name.replace('&', '%26').replace(' ', '%20'))
+        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded_name}"
+        r = try_fetch(url)
+        if r and r.status_code == 200:
+            try:
+                data = r.json()
+                if (
+                    "extract" in data
+                    and data["extract"].strip()
+                    and data.get("type") != "disambiguation"
+                ):
+                    return data["extract"]
+            except ValueError:
+                print(f"⚠️ Invalid JSON response for {company_name}")
+
+        # Step 2: Fallback - search Wikipedia for closest page title
         search_url = "https://en.wikipedia.org/w/api.php"
         params = {
             "action": "query",
@@ -305,28 +320,32 @@ def get_wikipedia_summary(company_name):
             "format": "json",
             "srlimit": 1,
         }
-        search_resp = requests.get(search_url, params=params, timeout=6).json()
-        results = search_resp.get("query", {}).get("search", [])
-
-        if results:
-            best_title = results[0]["title"]
-            summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(best_title)}"
-            r2 = requests.get(summary_url, timeout=6)
-            if r2.status_code == 200:
-                data2 = r2.json()
-                if (
-                    "extract" in data2
-                    and data2["extract"].strip()
-                    and data2.get("type") != "disambiguation"
-                ):
-                    return data2["extract"]
+        search_resp = try_fetch(search_url + "?" + "&".join(f"{k}={quote(str(v))}" for k, v in params.items()))
+        if search_resp:
+            try:
+                results = search_resp.json().get("query", {}).get("search", [])
+                if results:
+                    best_title = results[0]["title"]
+                    summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(best_title.replace('&', '%26').replace(' ', '%20'))}"
+                    r2 = try_fetch(summary_url)
+                    if r2 and r2.status_code == 200:
+                        data2 = r2.json()
+                        if (
+                            "extract" in data2
+                            and data2["extract"].strip()
+                            and data2.get("type") != "disambiguation"
+                        ):
+                            return data2["extract"]
+            except ValueError:
+                print(f"⚠️ Invalid JSON response in search fallback for {company_name}")
 
     except Exception as e:
         print(f"⚠️ Wikipedia fetch error for {company_name}: {e}")
 
-    # Step 3: Fallback message if absolutely nothing found
-    return f"{company_name} is a company that operates in the business domain."
-
+    # Step 3: SerpAPI Fallback for Summary
+    print("🔍 Using SerpAPI fallback for Wikipedia summary...")
+    search_query = f"{company_name} Wikipedia summary"
+    return serpapi_search(search_query) or f"{company_name} is a company that operates in the business domain."
 
 # ============================================================
 # 🧩 Helper: OpenRouter Chat Completion
@@ -338,7 +357,9 @@ def openrouter_chat(model, prompt, title):
         "X-Title": title,
         "Content-Type": "application/json",
     }
+
     data = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+
     try:
         response = requests.post(OPENROUTER_URL, headers=headers, json=data, timeout=20)
         response.raise_for_status()
@@ -347,118 +368,169 @@ def openrouter_chat(model, prompt, title):
         print(f"⚠️ OpenRouter API error: {e}")
         return ""
 
-
 # ============================================================
 # 🔹 Generate Company Summary
 # ============================================================
 def generate_summary(company_name, text=""):
     """
-    Always returns a well-structured Company Details summary.
-    Automatically uses Wikipedia if needed.
+    Always returns a complete, structured Company Details summary.
+    Ensures CEO, HQ, and Website fields are filled by fallback AI if missing.
     """
-
-    # --- Ensure some base content to analyze ---
     if not text.strip():
         text = get_wikipedia_summary(company_name)
 
-    # --- AI extraction prompt ---
-    prompt = f"""
-You are an expert company information extractor.
+    # --- Step 1: Base extraction prompt ---
+    base_prompt = f"""
+You are a professional company data researcher.
+Your job is to extract key company details **accurately and completely**.
 
-Your job is to **always return a structured Company Details summary** — even if the input text is short, incomplete, or unclear.
-Do not explain what you are doing or ask for more information.
-If a value cannot be confidently found, leave that field blank (but still include it).
+If the input text does not include all fields, you must **use your own knowledge** to fill in any missing ones.
+If the company is not found or uncertain, return exactly "NO DETAILS FOUND".
 
----
+Return ONLY in this markdown format:
 
-### 🧾 Extract the Following Fields:
-1. **Year Founded**
-2. **Website**
-3. **LinkedIn**
-4. **Headquarters (HQ)**
-5. **CEO / Key Executive**
-
----
-
-### 🧩 Output Rules:
-- Always use the **exact markdown format** shown below.  
-- Do **not** add commentary, explanations, or disclaimers.  
-- If info is missing, still include the field but leave blank.  
-
----
-
-### ✅ Output Format Example
 **Company Details**
-- Year Founded: 1907  
-- Website: https://www.shell.com  
-- LinkedIn: https://linkedin.com/company/shell  
-- Headquarters: The Hague, Netherlands  
-- CEO: Wael Sawan  
+- Year Founded: <value>
+- Website: <value>
+- LinkedIn: <value>
+- Headquarters: <value>
+- CEO: <value>
 
----
+Do not add explanations or commentary.
 
-Now extract and return **only** in this exact format using the content below:
+Company name: {company_name}
 
+Source text:
 {text[:8000]}
 """
 
-    result = openrouter_chat("openai/gpt-4o-mini", prompt, "Company Info Extractor")
+    # --- Step 2: First AI call ---
+    result = openrouter_chat("openai/gpt-4o-mini", base_prompt, "Company Info Extractor")
 
-    # Fallback: if AI gives empty output → use Wikipedia directly
-    if not result or len(result.strip()) < 20:
-        print("🔍 Fallback to Wikipedia...")
-        wiki_text = get_wikipedia_summary(company_name)
-        result = openrouter_chat("openai/gpt-4o-mini", prompt.replace(text, wiki_text), "Company Info Extractor")
+    # --- Step 3: Retry if any field missing or blank ---
+    def field_missing(output):
+        required_fields = ["Year Founded:", "Website:", "LinkedIn:", "Headquarters:", "CEO:"]
+        for field in required_fields:
+            if field not in output or f"{field}  " in output or f"{field} \n" in output:
+                return True
+        return False
 
-    # Last resort: safe default
-    if not result or len(result.strip()) < 20:
-        result = f"""**Company Details**
-- Year Founded:  
-- Website:  
-- LinkedIn:  
-- Headquarters:  
-- CEO:  
+    if not result or len(result.strip()) < 30 or field_missing(result):
+        print("🔁 Retrying with direct GPT lookup (forcing all fields)...")
+        enforce_prompt = f"""
+You are a company researcher AI. Your goal is to ensure that all fields below are **always filled** 
+for the company "{company_name}". Use general knowledge if missing from text.
+
+If you cannot find verified data after trying, return exactly "NO DETAILS FOUND".
+
+**Company Details**
+- Year Founded:
+- Website:
+- LinkedIn:
+- Headquarters:
+- CEO:
 """
+        result = openrouter_chat("openai/gpt-4o-mini", enforce_prompt, "Company Info Enforcer")
+
+    # --- Step 4: SerpAPI Fallback if Still Missing
+    # ---
+    if not result or "NO DETAILS FOUND" in result.upper() or field_missing(result):
+        print("🔍 Using SerpAPI fallback for company summary...")
+        search_query = f"{company_name} company profile founded year headquarters CEO website LinkedIn"
+        search_results = serpapi_search(search_query, num_results=5)
+        if search_results:
+            fallback_prompt = f"""
+            From the search results, extract key details for {company_name}.
+            Return ONLY in this markdown format:
+
+            **Company Details**
+            - Year Founded: <value>
+            - Website: <value>
+            - LinkedIn: <value>
+            - Headquarters: <value>
+            - CEO: <value>
+
+            No other text.
+            Results: {search_results}
+            """
+            result = openrouter_chat("openai/gpt-4o-mini", fallback_prompt, "SerpAPI Summary Fallback")
+
+    # --- Step 5: If still missing, fail gracefully ---
+    if not result or "NO DETAILS FOUND" in result.upper() or field_missing(result):
+        print("❌ No reliable details found.")
+        return "❌ No details found."
 
     return result
 
 # ============================================================
 # 🔹 Generate Company Description
 # ============================================================
-def generate_description(company_name, text=""):
+def generate_description(company_name, text="", company_details=""):
     """
-    Always returns a short, accurate company description.
-    Uses Wikipedia fallback automatically.
+    Generates a realistic, factual, 5–6 line company description.
+    Uses confirmed data from Wikipedia + AI summary.
+    Never invents placeholders or fake details.
     """
-
+    # --- Ensure some base reference text ---
     if not text.strip():
         text = get_wikipedia_summary(company_name)
 
-    prompt = f"""
-You are an expert business analyst.
-Based on the following web content, write a concise, factual, and professional company description suitable for a pitch deck or investor report.
+    # --- Combine verified context ---
+    combined_context = f"""
+Verified Company Information:
+{company_details if company_details else ''}
 
-Include:
-- What the company does
-- Its target customers or market
-- Its value proposition
-- Key differentiators (if mentioned)
-
-Keep it under 150 words. Focus only on available information.
-
-Content:
+Additional Context (Wikipedia or web):
 {text[:6000]}
 """
 
-    result = openrouter_chat("openai/gpt-4o-mini", prompt, "Company Description Generator")
+    # --- AI prompt ---
+    prompt = f"""
+You are a business analyst writing verified company descriptions.
 
-    # Fallback if AI fails or blank
-    if not result or len(result.strip()) < 20:
+Rules:
+1. Use ONLY the verified data provided below.
+2. DO NOT invent or guess facts — if something isn’t known, omit it.
+3. Keep the description factual, concise, and professional.
+4. Exactly 5–6 lines, no bullet points.
+5. Focus on what the company does, its products/services, market, and value.
+
+Write the 5–6 line description now.
+
+{combined_context}
+"""
+
+    result = openrouter_chat("openai/gpt-4o-mini", prompt, "Factual Company Description")
+
+    # --- Fallback if AI fails or empty ---
+    if not result or len(result.strip()) < 40:
         print("🔍 Fallback to Wikipedia...")
-        wiki_text = get_wikipedia_summary(company_name)
-        result = openrouter_chat("openai/gpt-4o-mini", prompt.replace(text, wiki_text), "Company Description Generator")
+        fallback_text = get_wikipedia_summary(company_name)
+        result = openrouter_chat("openai/gpt-4o-mini", prompt.replace(text, fallback_text), "Fallback Description")
 
-    if not result or len(result.strip()) < 20:
-        result = f"{company_name} is a company providing products or services in its respective industry."
+    # --- SerpAPI Fallback for Description
+    # ---
+    if not result or len(result.strip()) < 40:
+        print("🔍 Using SerpAPI fallback for company description...")
+        search_query = f"{company_name} company overview description what they do"
+        search_results = serpapi_search(search_query, num_results=5)
+        if search_results:
+            desc_prompt = f"""
+            From the search results, write a factual 5-6 line description for {company_name}.
+            Focus on products/services, market, value. No bullet points.
+            Results: {search_results}
+            """
+            result = openrouter_chat("openai/gpt-4o-mini", desc_prompt, "SerpAPI Description Fallback")
 
-    return result
+    # --- Safety fallback if still blank ---
+    if not result or len(result.strip()) < 40:
+        return "❌ No factual description could be generated."
+
+    # --- Enforce exactly 5–6 lines ---
+    lines = [line.strip() for line in result.strip().split("\n") if line.strip()]
+    if len(lines) < 5:
+        lines += [""] * (5 - len(lines))
+    elif len(lines) > 6:
+        lines = lines[:6]
+
+    return "\n".join(lines)

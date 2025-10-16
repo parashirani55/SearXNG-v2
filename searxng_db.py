@@ -19,7 +19,7 @@ def clean_text(text):
         return ""
     if not isinstance(text, str):
         text = str(text)
-    return text.strip().replace("\0", "")[:10000]  # Limit length to avoid DB issues
+    return text.strip().replace("\0", "")
 
 # -----------------------------
 # Valuation Reports
@@ -46,7 +46,7 @@ def store_report(company, summary, description):
 def get_reports():
     """Retrieve previous valuation reports."""
     try:
-        response = supabase.table("valuation_reports").select("*").order("created_at", desc=True).execute()
+        response = supabase.table("valuation_reports").select("*").order("id", desc=True).execute()
         if response.data:
             return response.data
         else:
@@ -65,7 +65,7 @@ def store_search(query, results, summary, description, corporate_events=""):
         "results": clean_text(results),
         "summary": clean_text(summary),
         "description": clean_text(description),
-        "corporate_events": clean_text(corporate_events) or "No events found."  # Ensure not null
+        "corporate_events": clean_text(corporate_events)
     }
     try:
         response = supabase.table("search_history").insert(data).execute()
@@ -80,21 +80,11 @@ def store_search(query, results, summary, description, corporate_events=""):
         return False
 
 def get_search_history():
-    """Retrieve previous search history, filtering duplicates by query."""
+    """Retrieve previous search history."""
     try:
-        response = supabase.table("search_history").select("*").order("created_at", desc=True).execute()
+        response = supabase.table("search_history").select("*").order("id", desc=True).execute()
         if response.data:
-            # Deduplicate by query
-            seen = set()
-            unique = []
-            for item in response.data:
-                if item['query'] not in seen:
-                    seen.add(item['query'])
-                    # Ensure corporate_events has default if missing
-                    if not item.get('corporate_events'):
-                        item['corporate_events'] = "No events found."
-                    unique.append(item)
-            return unique
+            return response.data
         else:
             return []
     except Exception as e:

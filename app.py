@@ -1,10 +1,10 @@
 import streamlit as st
 from dotenv import load_dotenv
 import os
-import time
-import random
-from searxng_crawler import scrape_website
-from searxng_analyzer import generate_summary, generate_description, get_wikipedia_summary
+
+# Local imports
+from searxng_crawler import scrape_website  # Updated with Wikipedia fallback
+from searxng_analyzer import generate_summary, generate_description
 from searxng_db import store_report, get_reports, store_search, get_search_history
 from searxng_pdf import create_pdf_from_text
 from serpapi import GoogleSearch
@@ -30,156 +30,97 @@ search_query = st.text_input(
     placeholder="Google, ChatGPT, or https://example.com",
 )
 
-# --- Fetch Page 1 Links ---
-if search_query.strip():
-    st.subheader("🔗 Top Page 1 Search Results")
-    try:
-        params = {
-            "q": search_query,
-            "hl": "en",
-            "gl": "us",
-            "num": 10,
-            "api_key": SERPAPI_KEY
-        }
-        search = GoogleSearch(params)
-        results = search.get_dict().get("organic_results", [])
-        page1_links = []
-
-        if results:
-            for idx, res in enumerate(results):
-                title = res.get("title") or res.get("link", "")
-                link = res.get("link", "")
-                snippet = res.get("snippet", "")
-                st.markdown(f"{idx+1}. [{title}]({link})")
-                page1_links.append(link)
-        else:
-            st.info("No search results found for this query.")
-    except Exception as e:
-        st.error(f"Error fetching search results: {e}")
-
-# --- Humanized Progress Messages ---
-PROGRESS_MESSAGES = [
-    "📡 Gathering company signals from trusted sources...",
-    "🧠 Summarizing verified data into insights...",
-    "💼 Extracting executive and HQ details...",
-    "📊 Refining structured business overview...",
-    "🌐 Collecting web intelligence and final touches..."
-]
-
-# --- Analyze Company ---
-if st.button("🚀 Analyze Company"):
+# --- Search Logic ---
+if st.button("Search"):
     if not search_query.strip():
-        st.warning("⚠️ Please enter a company name or URL")
+        st.warning("⚠️ Please enter a search query or URL")
     else:
-        progress = st.progress(0)
-        status = st.empty()
+        st.session_state['search_results'] = []
 
-        summary = ""
-        description = ""
-        company_details = ""
-        content_to_use = ""
+        # Detect if input is a direct URL or a search query
+        if search_query.startswith("http"):
+            st.session_state['search_results'] = [{
+                "title": search_query,
+                "link": search_query,
+                "snippet": "",
+                "id": 0
+            }]
+        else:
+            try:
+                params = {
+                    "q": search_query,
+                    "hl": "en",
+                    "gl": "us",
+                    "num": 10,
+                    "api_key": os.getenv("SERPAPI_KEY")
+                }
+                search = GoogleSearch(params)
+                results = search.get_dict().get("organic_results", [])
 
-        try:
-            # --- Step 1: Wikipedia ---
-            status.text("📘 Reading company background...")
-            wiki_text = get_wikipedia_summary(search_query)
-            content_to_use = wiki_text
-            progress.progress(20)
+                for idx, res in enumerate(results):
+                    st.session_state['search_results'].append({
+                        "title": res.get("title") or res.get("link", ""),
+                        "link": res.get("link", ""),
+                        "snippet": res.get("snippet", ""),
+                        "id": idx
+                    })
+            except Exception as e:
+                st.error(f"Error fetching search results: {e}")
 
-            # --- Step 2: GPT Company Details Extraction ---
-            status.text("🧠 Extracting company structure...")
-            summary = generate_summary(search_query, text=wiki_text)
-            progress.progress(40)
+# --- Display URLs to be analyzed ---
+if st.session_state.get('search_results'):
+    st.subheader("🔗 URLs to be Analyzed (Page 1 Results)")
+    for res in st.session_state['search_results']:
+        st.markdown(f"- [{res['title']}]({res['link']})")
 
-            # --- Step 3: Check for missing fields ---
-            required_fields = ["CEO", "Founder", "Headquarters", "Website", "Year Founded", "LinkedIn"]
-            missing = [field for field in required_fields if f"{field}:" in summary and summary.split(f"{field}:")[1].strip() == ""]
-            
-            if missing:
-                status.text("🔍 Searching for missing info...")
-                fix_prompt = f"""
-You are an expert data researcher.
-We are missing the following fields for **{search_query}**: {', '.join(missing)}.
+# --- Analyze All URLs ---
+if st.session_state.get('search_results') and st.button("🚀 Analyze All Page 1 Links"):
+    urls_to_process = [res['link'] for res in st.session_state['search_results']]
+    total_urls = len(urls_to_process)
+    progress_bar = st.progress(0)
 
-Find accurate, up-to-date info for these fields ONLY.
-Format your answer exactly as:
-- Field: Value
-- Field: Value
-(no extra text)
-                """
-                from searxng_analyzer import openrouter_chat
-                missing_filled = openrouter_chat("openai/gpt-4o-mini", fix_prompt, "Missing Field Finder")
-                if missing_filled:
-                    for line in missing_filled.split("\n"):
-                        if ":" in line:
-                            key, val = line.split(":", 1)
-                            summary = summary.replace(f"{key.strip()}:", f"{key.strip()}: {val.strip()}")
-            progress.progress(60)
+    for idx, url in enumerate(urls_to_process):
+        with st.spinner(f"Analyzing {url} ..."):
+            try:
+                scraped_text = scrape_website(base_url=url, company_name=search_query)
 
-            # --- Step 4: Website fallback if fields still missing ---
-            still_missing = [field for field in required_fields if f"{field}:" in summary and summary.split(f"{field}:")[1].strip() == ""]
-            if still_missing:
-                status.text("🌐 Exploring company website...")
-                from searxng_crawler import scrape_website
+                if not scraped_text:
+                    st.warning(f"No content scraped from {url}. Skipping analysis.")
+                    continue
 
-                base_urls = [
-                    f"https://{search_query.lower().replace(' ', '')}.com/about",
-                    f"https://{search_query.lower().replace(' ', '')}.com/about-us",
-                    f"https://{search_query.lower().replace(' ', '')}.com/company",
-                    f"https://{search_query.lower().replace(' ', '')}.com/who-we-are",
-                    f"https://{search_query.lower().replace(' ', '')}.com/leadership",
-                    f"https://{search_query.lower().replace(' ', '')}.com/team"
-                ]
+                # AI Analysis
+                summary = generate_summary(scraped_text)
+                description = generate_description(scraped_text)
 
-                website_text = ""
-                for url in base_urls:
-                    try:
-                        site_text = scrape_website(base_url=url, company_name=search_query)
-                        if site_text and len(site_text) > len(website_text):
-                            website_text = site_text
-                    except:
-                        continue
+                # Save to DB
+                store_report(url, summary, description)
+                store_search(search_query, scraped_text, summary, description)
 
-                if website_text.strip():
-                    summary = generate_summary(search_query, text=website_text)
-                    description = generate_description(search_query, text=website_text, company_details=summary)
-                    content_to_use = website_text
-            progress.progress(80)
+                # Display Results in Collapsible Expander
+                with st.expander(f"📌 {url}"):
+                    st.subheader("📈 Valuation Summary Report")
+                    st.write(summary)
 
-            # --- Step 5: Final description ---
-            if not description.strip():
-                status.text("📝 Writing company profile...")
-                description = generate_description(search_query, text=wiki_text, company_details=summary)
-            progress.progress(100)
+                    st.subheader("🏢 Company Description")
+                    st.write(description)
 
-            # --- Step 6: Validation ---
-            missing_final = [field for field in required_fields if f"{field}:" in summary and summary.split(f"{field}:")[1].strip() == ""]
-            if missing_final:
-                st.error("❌ No complete data found for this company even after retries.")
-            else:
-                store_report(search_query, summary, description)
-                store_search(search_query, content_to_use, summary, description)
+                    # PDF Download
+                    combined_text = f"Company Description:\n{description}\n\nValuation Summary:\n{summary}"
+                    pdf_file = create_pdf_from_text(title=url, summary=combined_text)
+                    st.download_button(
+                        label="📄 Download PDF",
+                        data=pdf_file,
+                        file_name=f"{url.replace('https://','').replace('/','_')}.pdf",
+                        mime="application/pdf",
+                        key=f"download_{idx}_{url}"
+                    )
 
-                st.success("✅ Company data successfully fetched!")
-                st.subheader("📈 Valuation Summary Report")
-                st.markdown(summary)
+                # Update progress bar
+                progress = (idx + 1) / total_urls
+                progress_bar.progress(progress)
 
-                st.subheader("🏢 Company Description (5–6 lines)")
-                st.text(description)
-
-                pdf_file = create_pdf_from_text(
-                    title=search_query,
-                    summary=f"{description}\n\n{summary}"
-                )
-                st.download_button(
-                    label="📄 Download PDF",
-                    data=pdf_file,
-                    file_name=f"{search_query.replace(' ','_')}.pdf",
-                    mime="application/pdf"
-                )
-
-        except Exception as e:
-            st.error(f"⚠️ Error during analysis: {e}")
+            except Exception as e:
+                st.error(f"Error analyzing {url}: {e}")
 
 # --- Previous Reports ---
 st.divider()
@@ -192,10 +133,14 @@ if reports:
             st.write(r.get('summary', 'No summary available.'))
             st.subheader("🏢 Company Description")
             st.write(r.get('description', 'No description available.'))
+            st.subheader("📅 Corporate Events")
+            events = r.get('corporate_events', 'No events available.')
+            st.write(events if events else "No events available.")
 
+            events_text = f"\n\nCorporate Events:\n{r.get('corporate_events','')}" if r.get('corporate_events') else ""
             pdf_file = create_pdf_from_text(
                 title=r.get('company', 'Report'),
-                summary=f"{r.get('description','')}\n\n{r.get('summary','')}"
+                summary=f"{r.get('description','')}\n\n{r.get('summary','')}{events_text}"
             )
             st.download_button(
                 label="📄 Download PDF",
@@ -204,32 +149,41 @@ if reports:
                 mime="application/pdf",
                 key=f"download_report_{idx}"
             )
+else:
+    st.info("No previous reports found.")
 
 # --- Previous Search History ---
 st.divider()
 st.subheader("🕘 Previous Search History")
 history = get_search_history()
-if history:
+if not history:
+    st.info("No previous searches yet.")
+else:
     seen_queries = set()
     for idx, h in enumerate(history):
         query = h.get('query', 'Unknown Query')
         if query in seen_queries:
             continue
         seen_queries.add(query)
+
         with st.expander(f"🔎 {query}"):
             raw_text = h.get('results', '')[:500] + "..."
             st.markdown(f"**Raw Results:**\n{raw_text}")
-            st.markdown(f"**AI Description:**\n{h.get('description', '')}")
-            st.markdown(f"**AI Summary:**\n{h.get('summary', '')}")
+            st.markdown(f"**AI Description:**\n{h.get('description', 'No description available.')}")
+            st.markdown(f"**AI Summary:**\n{h.get('summary', 'No summary available.')}")
+            st.markdown(f"**Corporate Events:**\n{h.get('corporate_events', 'No events available.')}")
 
+            events_text = f"\n\nCorporate Events:\n{h.get('corporate_events','')}" if h.get('corporate_events') else ""
             pdf_file = create_pdf_from_text(
-                title=query,
-                summary=f"{h.get('description','')}\n\n{h.get('summary','')}"
+                title=h.get('query', 'History'),
+                summary=f"{h.get('description','')}\n\n{h.get('summary','')}{events_text}"
             )
             st.download_button(
                 label="📄 Download PDF",
                 data=pdf_file,
-                file_name=f"{query.replace(' ', '_')}.pdf",
+                file_name=f"{h.get('query', 'history').replace(' ', '_')}.pdf",
                 mime="application/pdf",
                 key=f"download_history_{idx}"
             )
+else:
+    st.info("No previous search history found.")

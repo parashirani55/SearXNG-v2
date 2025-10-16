@@ -178,7 +178,8 @@ if st.button("🚀 Analyze Company"):
             progress.progress(100)
 
             # --- Step 7: Store & Display ---
-            store_report(search_query, summary, description)
+            store_report(search_query, summary, description, corporate_events)
+
             store_search(
                 search_query,
                 content_to_use,

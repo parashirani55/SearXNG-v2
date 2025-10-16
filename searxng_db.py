@@ -24,12 +24,13 @@ def clean_text(text):
 # -----------------------------
 # Valuation Reports
 # -----------------------------
-def store_report(company, summary, description):
-    """Store valuation summary and description for a company."""
+def store_report(company, summary, description, corporate_events=""):
+    """Store valuation summary, description, and corporate events for a company."""
     data = {
         "company": clean_text(company),
         "summary": clean_text(summary),
-        "description": clean_text(description)
+        "description": clean_text(description),
+        "corporate_events": clean_text(corporate_events)
     }
     try:
         response = supabase.table("valuation_reports").insert(data).execute()

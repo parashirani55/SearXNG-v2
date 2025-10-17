@@ -89,13 +89,39 @@ def generate_corporate_events(company_name, text=""):
     print(f"🚀 Extracting corporate events for {company_name}")
     all_events = []
 
+    # ============================================================
     # 1️⃣ Wikipedia / text-based events
+    # ============================================================
     if text.strip():
         wiki_prompt = f"""
-        Extract ONLY corporate events (M&A, IPOs, investments, spin-offs) for {company_name} from 2021–2025.
-        For each event, provide JSON object with: description (include company), date (YYYY-MM-DD), type, value (or empty if unknown).
-        Text: {text[:4000]}
-        """
+You are a professional business analyst.
+
+TASK:
+Extract ONLY verifiable corporate events for {company_name} from the years **2021–2025**.
+Corporate events include: Mergers & Acquisitions, IPOs, Investments/Fundings, Spin-offs, and Partnerships.
+
+OUTPUT RULES:
+- Output ONLY valid JSON.
+- JSON must be a single array of event objects.
+- Each object must have these exact fields:
+  description, date (YYYY-MM-DD), type, value
+- If any field is unknown, leave it empty (e.g. "").
+- Do NOT include explanations, markdown, or extra text outside the JSON.
+- Do NOT include events before 2021.
+
+EXAMPLE FORMAT:
+[
+  {{
+    "description": "Apple acquired Beats Electronics",
+    "date": "2014-05-28",
+    "type": "Acquisition",
+    "value": "$3 billion"
+  }}
+]
+
+SOURCE TEXT:
+{text[:4000]}
+"""
         wiki_events = openrouter_chat("perplexity/sonar-pro", wiki_prompt, "Corporate Events Wikipedia")
         try:
             events = json.loads(wiki_events)
@@ -105,11 +131,33 @@ def generate_corporate_events(company_name, text=""):
         except Exception:
             print("⚠️ Failed to parse Wikipedia events")
 
+    # ============================================================
     # 2️⃣ GPT fallback events
+    # ============================================================
     chatgpt_prompt = f"""
-    Extract corporate events (M&A, IPOs, investments, spin-offs) for {company_name} 2021–2025.
-    Return STRICTLY JSON array: description, date (YYYY-MM-DD), type, value (or empty if unknown).
-    """
+You are a structured data extractor.
+
+TASK:
+List all major corporate events (M&A, IPOs, investments, spin-offs, or partnerships) involving {company_name}
+that occurred from **2021 to 2025**.
+
+OUTPUT RULES:
+- Return ONLY a valid JSON array.
+- Each array element must contain:
+  description, date (YYYY-MM-DD), type, value
+- No explanations, headers, markdown, or commentary.
+- Only include events within the 2021–2025 range.
+
+EXAMPLE OUTPUT:
+[
+  {{
+    "description": "Tesla announced a 3-for-1 stock split",
+    "date": "2022-08-25",
+    "type": "Corporate Action",
+    "value": ""
+  }}
+]
+"""
     chatgpt_events = openrouter_chat("anthropic/claude-3.5-sonnet", chatgpt_prompt, "Corporate Events GPT")
     try:
         events = json.loads(chatgpt_events)
@@ -119,11 +167,32 @@ def generate_corporate_events(company_name, text=""):
     except Exception:
         print("⚠️ Failed to parse GPT events")
 
+    # ============================================================
     # 3️⃣ Website / press events
+    # ============================================================
     site_events_prompt = f"""
-    List corporate events (M&A, IPOs, investments, spin-offs) for {company_name} 2021–2025 using reliable sources.
-    Return STRICTLY JSON array: description, date (YYYY-MM-DD), type, value (or empty if unknown).
-    """
+You are a corporate intelligence model.
+
+TASK:
+Based on online reports and reliable news coverage, list notable {company_name} events from 2021–2025.
+Include M&A, IPOs, investments, spin-offs, or large partnerships.
+
+OUTPUT RULES:
+- Return ONLY valid JSON.
+- JSON must be a single array of objects.
+- Each object fields: description, date (YYYY-MM-DD), type, value
+- No commentary or text outside JSON.
+
+EXAMPLE:
+[
+  {{
+    "description": "Google acquired Fitbit",
+    "date": "2021-01-14",
+    "type": "Acquisition",
+    "value": "$2.1 billion"
+  }}
+]
+"""
     site_events = openrouter_chat("perplexity/sonar-pro", site_events_prompt, "Corporate Events Website")
     try:
         events = json.loads(site_events)
@@ -133,10 +202,13 @@ def generate_corporate_events(company_name, text=""):
     except Exception:
         print("⚠️ Failed to parse website/press events")
 
+    # ============================================================
+    # 🧹 Clean-up & Format
+    # ============================================================
     if not all_events:
         return f"⚠️ No corporate events found for {company_name}"
 
-    # Deduplicate by description + date
+    # Deduplicate by (description, date)
     unique_events = {}
     for e in all_events:
         desc = e.get("description", f"{company_name} Unknown Event")

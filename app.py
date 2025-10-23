@@ -8,7 +8,8 @@ from searxng_analyzer import (
     generate_summary,
     generate_description,
     get_wikipedia_summary,
-    generate_corporate_events
+    generate_corporate_events,
+    get_top_management
 )
 from searxng_db import (
     store_report,
@@ -78,6 +79,8 @@ if st.button("🚀 Analyze Company"):
         description = ""
         corporate_events = ""
         content_to_use = ""
+        mgmt_list = []
+        mgmt_text = ""
 
         try:
             # --- Step 1: Wikipedia ---
@@ -175,17 +178,25 @@ if st.button("🚀 Analyze Company"):
             # --- Step 6: Corporate Events ---
             status.text("📅 Fetching corporate events...")
             corporate_events = generate_corporate_events(search_query, text=content_to_use) or "No corporate events found."
-            progress.progress(100)
+            progress.progress(92)
 
-            # --- Step 7: Store & Display ---
-            store_report(search_query, summary, description, corporate_events)
+            # --- Step 7: Top management (NEW) ---
+            status.text("👥 Fetching top management (current + recent)...")
+            mgmt_list, mgmt_text = get_top_management(search_query, text=content_to_use)
+            if not mgmt_text:
+                mgmt_text = "No top management data found."
+            progress.progress(96)
+
+            # --- Step 8: Store & Display (unchanged flow, but include top_management) ---
+            store_report(search_query, summary, description, corporate_events, top_management=mgmt_text)
 
             store_search(
                 search_query,
                 content_to_use,
                 summary,
                 description,
-                corporate_events=corporate_events
+                corporate_events=corporate_events,
+                top_management=mgmt_text
             )
 
             st.success("✅ Company data successfully fetched!")
@@ -197,23 +208,38 @@ if st.button("🚀 Analyze Company"):
             st.text(description)
 
             st.subheader("📅 Corporate Events")
+            # Use markdown to allow basic formatting if any
             st.text(corporate_events)
 
+            st.subheader("👥 Top Management")
+            # display the same formatted string as the analysis
+            st.text(mgmt_text)
+
+            # Prepare PDF (include corporate events and top management)
             events_text = f"\n\nCorporate Events:\n{corporate_events}" if corporate_events else ""
+            mgmt_text_for_pdf = f"\n\nTop Management:\n{mgmt_text}" if mgmt_text else ""
 
             pdf_file = create_pdf_from_text(
                 title=search_query,
-                summary=f"{description}\n\n{summary}{events_text}"
+                summary=f"{description}\n\n{summary}{events_text}{mgmt_text_for_pdf}"
             )
 
-            st.download_button(
-                label="📄 Download PDF",
-                data=pdf_file,
-                file_name=f"{search_query.replace(' ', '_')}.pdf",
-                mime="application/pdf"
-            )
+            # Provide download button for current analysis
+            try:
+                st.download_button(
+                    label="📄 Download PDF",
+                    data=pdf_file,
+                    file_name=f"{search_query.replace(' ', '_')}.pdf",
+                    mime="application/pdf"
+                )
+            except Exception as e:
+                st.warning(f"Could not generate PDF download: {e}")
+
+            progress.progress(100)
+            status.text("✅ Done")
 
         except Exception as e:
+            status.text("")
             st.error(f"⚠️ Error during analysis: {e}")
 
 # --- Previous Reports ---
@@ -233,10 +259,15 @@ if reports:
             st.subheader("📅 Corporate Events")
             st.write(r.get('corporate_events', 'No events available.'))
 
+            st.subheader("👥 Top Management")
+            st.write(r.get('top_management', 'No top management available.'))
+
+            # Include top_management in report PDF
             events_text = f"\n\nCorporate Events:\n{r.get('corporate_events', '')}" if r.get('corporate_events') else ""
+            mgmt_text = f"\n\nTop Management:\n{r.get('top_management', '')}" if r.get('top_management') else ""
             pdf_file = create_pdf_from_text(
                 title=r.get('company', 'Report'),
-                summary=f"{r.get('description', '')}\n\n{r.get('summary', '')}{events_text}"
+                summary=f"{r.get('description', '')}\n\n{r.get('summary', '')}{events_text}{mgmt_text}"
             )
 
             st.download_button(
@@ -261,16 +292,19 @@ if history:
         seen_queries.add(query)
 
         with st.expander(f"🔎 {query}"):
-            raw_text = h.get('results', '')[:500] + "..."
+            raw_text = (h.get('results', '') or '')[:500] + "..."
             st.markdown(f"**Raw Results:**\n{raw_text}")
             st.markdown(f"**AI Description:**\n{h.get('description', '')}")
             st.markdown(f"**AI Summary:**\n{h.get('summary', '')}")
             st.markdown(f"**Corporate Events:**\n{h.get('corporate_events', 'No events available.')}")
+            st.markdown(f"**Top Management:**\n{h.get('top_management', 'No top management available.')}")
 
+            # Include top_management in history PDF
             events_text = f"\n\nCorporate Events:\n{h.get('corporate_events', '')}" if h.get('corporate_events') else ""
+            mgmt_text = f"\n\nTop Management:\n{h.get('top_management', '')}" if h.get('top_management') else ""
             pdf_file = create_pdf_from_text(
                 title=query,
-                summary=f"{h.get('description', '')}\n\n{h.get('summary', '')}{events_text}"
+                summary=f"{h.get('description', '')}\n\n{h.get('summary', '')}{events_text}{mgmt_text}"
             )
 
             st.download_button(

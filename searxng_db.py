@@ -24,13 +24,14 @@ def clean_text(text):
 # -----------------------------
 # Valuation Reports
 # -----------------------------
-def store_report(company, summary, description, corporate_events=""):
-    """Store valuation summary, description, and corporate events for a company."""
+def store_report(company, summary, description, corporate_events="", top_management=""):
+    """Store valuation summary, description, corporate events, and top management for a company."""
     data = {
         "company": clean_text(company),
         "summary": clean_text(summary),
         "description": clean_text(description),
-        "corporate_events": clean_text(corporate_events)
+        "corporate_events": clean_text(corporate_events),
+        "top_management": clean_text(top_management)
     }
     try:
         response = supabase.table("valuation_reports").insert(data).execute()
@@ -59,14 +60,15 @@ def get_reports():
 # -----------------------------
 # Search History
 # -----------------------------
-def store_search(query, results, summary, description, corporate_events=""):
-    """Store a search history entry including corporate events."""
+def store_search(query, results, summary, description, corporate_events="", top_management=""):
+    """Store a search history entry including corporate events and top management."""
     data = {
         "query": clean_text(query),
         "results": clean_text(results),
         "summary": clean_text(summary),
         "description": clean_text(description),
-        "corporate_events": clean_text(corporate_events)
+        "corporate_events": clean_text(corporate_events),
+        "top_management": clean_text(top_management)
     }
     try:
         response = supabase.table("search_history").insert(data).execute()
@@ -79,7 +81,7 @@ def store_search(query, results, summary, description, corporate_events=""):
     except Exception as e:
         print(f"⚠️ Exception while storing search history: {e}")
         return False
-
+    
 def get_search_history():
     """Retrieve previous search history."""
     try:

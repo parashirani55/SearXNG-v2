@@ -82,6 +82,95 @@ def get_wikipedia_summary(company_name):
         print(f"⚠️ Wikipedia fetch error: {e}")
     return ""
 
+
+# -----------------------------
+# 🔹 Top Management Fetcher
+# -----------------------------
+def _format_management_list(man_list):
+    """
+    Convert a list of dicts to a readable single-line string:
+    "Name — Role; Name2 — Role2; ..."
+    """
+    if not man_list:
+        return ""
+    formatted_entries = []
+    for item in man_list:
+        name = item.get("name", "").strip()
+        role = item.get("role", "").strip()
+        if name and role:
+            formatted_entries.append(f"{name} — {role}")
+        elif name:
+            formatted_entries.append(f"{name}")
+    return "; ".join(formatted_entries)
+
+def get_top_management(company_name, text=""):
+    """
+    Fetch the top management (current + past 2 years, but do NOT mention the 'past 2 years' anywhere).
+    Returns tuple: (management_json_list, formatted_text)
+    management_json_list is a list of {"name": "...", "role": "..."}.
+    formatted_text is a semicolon-separated readable string suitable for PDF/UI.
+    """
+    print(f"🔎 Fetching top management for {company_name}")
+    management_results = []
+
+    # 1) Try Wikipedia / provided text first
+    source_text = text.strip() or get_wikipedia_summary(company_name)
+    if source_text and len(source_text) > 20:
+        wp_prompt = f"""
+You are a precise data extractor. From the SOURCE TEXT below, extract the company's top management names and their current roles.
+INSTRUCTIONS:
+- Only return valid JSON: an array of objects with keys exactly: name, role
+- Example: [{{"name": "Jane Doe", "role": "CEO"}}, ...]
+- Include current leaders and those who served in relevant leadership roles within the past two years (but DO NOT mention or display the phrase 'past two years' anywhere).
+- Do not include any other fields.
+SOURCE TEXT:
+{source_text[:6000]}
+"""
+        wp_resp = openrouter_chat("perplexity/sonar-pro", wp_prompt, "Top Management Wikipedia")
+        try:
+            parsed = json.loads(wp_resp)
+            if isinstance(parsed, list):
+                management_results.extend(parsed)
+                print("✅ Added management from Wikipedia/text")
+        except Exception:
+            print("⚠️ Failed to parse management JSON from Wikipedia/text")
+
+    # 2) GPT fallback if nothing or to supplement
+    if not management_results:
+        gpt_prompt = f"""
+You are a structured extractor. Provide a JSON array of top management for {company_name}.
+REQUIREMENTS:
+- Output only JSON (array).
+- Each element must be: {{ "name": "<Full name>", "role": "<Role>" }}
+- Include current leadership; you may include people who served in leadership roles within the last two years (do NOT include any mention of 'past two years' or similar).
+- No commentary or extra text.
+"""
+        gpt_resp = openrouter_chat("anthropic/claude-3.5-sonnet", gpt_prompt, "Top Management GPT")
+        try:
+            parsed = json.loads(gpt_resp)
+            if isinstance(parsed, list):
+                management_results.extend(parsed)
+                print("✅ Added management from GPT fallback")
+        except Exception:
+            print("⚠️ Failed to parse management JSON from GPT fallback")
+
+    # Deduplicate by (name, role)
+    unique = {}
+    for m in management_results:
+        name = m.get("name", "").strip()
+        role = m.get("role", "").strip()
+        if not name:
+            continue
+        key = (name.lower(), role.lower())
+        unique[key] = {"name": name, "role": role}
+
+    final_list = list(unique.values())
+
+    # If still empty, return placeholder empty list
+    formatted_text = _format_management_list(final_list)
+    return final_list, formatted_text
+
+
 # ============================================================
 # 🔹 Corporate Events Generator
 # ============================================================

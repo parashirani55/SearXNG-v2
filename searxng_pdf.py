@@ -33,8 +33,10 @@ def clean_text(text: str) -> str:
         text = text.replace(emoji, replacement)
     return text
 
-
-def create_pdf_from_text(title, summary):
+def create_pdf_from_text(title: str, summary: str, description: str = "", corporate_events: str = "", top_management: str = "") -> io.BytesIO:
+    """
+    Create a PDF including company description, summary, corporate events, and top management.
+    """
     pdf = FPDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -48,12 +50,35 @@ def create_pdf_from_text(title, summary):
     pdf.multi_cell(0, 10, clean_text(title), align="C")
     pdf.ln(8)
 
-    # 🩵 Summary
-    pdf.set_font("DejaVu", "", 12)
-    pdf.multi_cell(0, 8, clean_text(summary))
+    # 🩵 Description
+    if description:
+        pdf.set_font("DejaVu", "", 12)
+        pdf.multi_cell(0, 8, clean_text(description))
+        pdf.ln(5)
+
+    # 🟦 Summary
+    if summary:
+        pdf.set_font("DejaVu", "", 12)
+        pdf.multi_cell(0, 8, clean_text(summary))
+        pdf.ln(5)
+
+    # 📅 Corporate Events
+    if corporate_events:
+        pdf.set_font("DejaVu", "B", 14)
+        pdf.multi_cell(0, 10, "Corporate Events:")
+        pdf.set_font("DejaVu", "", 12)
+        pdf.multi_cell(0, 8, clean_text(corporate_events))
+        pdf.ln(5)
+
+    # 👥 Top Management
+    if top_management:
+        pdf.set_font("DejaVu", "B", 14)
+        pdf.multi_cell(0, 10, "Top Management:")
+        pdf.set_font("DejaVu", "", 12)
+        pdf.multi_cell(0, 8, clean_text(top_management))
 
     # ✅ Return as BytesIO safely
-    pdf_bytes = pdf.output(dest="S")  # already bytearray
+    pdf_bytes = pdf.output(dest="S")
     if isinstance(pdf_bytes, bytearray):
         pdf_bytes = bytes(pdf_bytes)
 

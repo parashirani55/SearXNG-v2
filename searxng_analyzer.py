@@ -25,6 +25,7 @@ load_dotenv()
 OPENROUTER_API_KEY = os.getenv("OPEN_ROUTER_KEY")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+print("🔑 Loaded OpenRouter Key:", bool(OPENROUTER_API_KEY))
 
 # ============================================================
 # 🔹 OpenRouter Chat Completion Helper

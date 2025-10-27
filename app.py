@@ -1,73 +1,323 @@
+# ============================================================
+# app.py — SearXNG AI Research & Valuation Assistant
+# ============================================================
+
 import os
+import json
+import re
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from serpapi import GoogleSearch
+import hashlib
+import ast
+import uuid
 
-from searxng_crawler import scrape_website
 from searxng_analyzer import (
     generate_summary,
     generate_description,
     get_wikipedia_summary,
     generate_corporate_events,
-    get_top_management
+    get_top_management,
+    # generate_subsidiary_data
 )
 from searxng_db import (
     store_report,
     get_reports,
     store_search,
-    get_search_history
+    get_search_history,
+    # get_subsidiaries 
 )
 from searxng_pdf import create_pdf_from_text
 
-# --- Load Environment Variables ---
+# ============================================================
+# 🔹 Normalization Helpers
+# ============================================================
+
+def normalize_top_management(data):
+    """Ensure keys match the expected format (role → position, add status if missing)."""
+    if not data:
+        return []
+    try:
+        mgmt = json.loads(data) if isinstance(data, str) else data
+        if isinstance(mgmt, list):
+            for m in mgmt:
+                if "role" in m and "position" not in m:
+                    m["position"] = m.pop("role")
+                if "status" not in m:
+                    m["status"] = "Current"  # Default for legacy data
+            return mgmt
+    except:
+        return []
+    return []
+
+def normalize_corporate_events(raw_text):
+    """Convert plain text or JSON events into a structured list."""
+    events = []
+    if not raw_text:
+        return events
+
+    # If already JSON, return it directly
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, list):
+            return parsed
+    except:
+        pass
+
+    # Parse plain text format using regex for robust multi-line extraction
+    pattern = r'- Event Description: (.*?)(?=\s*(?:Date:|Type:|Value:| - Event Description:)|$)'
+    matches = re.findall(pattern, raw_text, re.DOTALL | re.IGNORECASE)
+    
+    for match in matches:
+        if not match.strip():
+            continue
+        event_block = re.search(r'- Event Description: .*?(?=\s*- Event Description:|$)', raw_text, re.DOTALL | re.IGNORECASE)
+        if not event_block:
+            continue
+        event_block = event_block.group(0)
+        
+        event = {"description": match.strip()}
+        lines = event_block.split('\n')
+        for line in lines:
+            line = line.strip()
+            if ':' in line and line.lower().startswith(('date:', 'type:', 'value:')):
+                key, val = line.split(':', 1)
+                key = key.strip().lower()
+                val = val.strip()
+                if key == 'date':
+                    event["date"] = val
+                elif key == 'type':
+                    event["type"] = val
+                elif key == 'value':
+                    event["value"] = val
+        if event.get("description"):
+            events.append(event)
+    
+    return events
+
+# ============================================================
+# 🔹 Environment Setup
+# ============================================================
 load_dotenv()
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 
-# --- Streamlit Config ---
+# ============================================================
+# 🔹 Streamlit Configuration
+# ============================================================
 st.set_page_config(
     page_title="SearXNG – AI Research Assistant",
     page_icon="🧭",
     layout="wide"
 )
-
-# --- Page Header ---
 st.title("🧭 SearXNG – AI Research & Valuation Assistant")
 st.markdown("#### Discover insights, analyze companies, and generate instant valuation reports powered by AI.")
 
-# --- User Input ---
-search_query = st.text_input(
-    "🔎 Enter company/topic (or paste URL directly)",
-    placeholder="Google, ChatGPT, or https://example.com"
-)
+# ============================================================
+# 🔹 Helper Functions
+# ============================================================
 
-# --- Fetch Page 1 Links ---
+def show_corporate_events(corporate_events):
+    """Render corporate events as a clean table."""
+    if isinstance(corporate_events, str):
+        corporate_events = normalize_corporate_events(corporate_events)
+
+    if isinstance(corporate_events, list) and corporate_events:
+        df = pd.DataFrame(corporate_events)
+        if "date" in df.columns:
+            df["sort_date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.sort_values("sort_date", ascending=False).drop("sort_date", axis=1)
+        
+        rename_map = {
+            "date": "Date",
+            "description": "Event Description",
+            "type": "Type",
+            "value": "Value"
+        }
+        df = df.rename(columns=rename_map)
+        df = df.fillna("-")
+        
+        cols = [c for c in ["Date", "Event Description", "Type", "Value"] if c in df.columns]
+        if cols:
+            st.dataframe(df[cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("No valid corporate events data available.")
+    else:
+        st.warning("⚠️ No corporate events found or data is empty. Check DB entry for 'corporate_events' field.")
+
+def show_top_management(mgmt_data):
+    """
+    Renders top management information in two clear tables:
+    - Current Leadership
+    - Past Leadership
+    Handles JSON, legacy strings, or semicolon-delimited text gracefully.
+    """
+    # -------------------------
+    # 1️⃣ Parse / Normalize Data
+    # -------------------------
+    if not mgmt_data:
+        st.info("No top management data available.")
+        return
+
+    # Convert JSON strings → list
+    if isinstance(mgmt_data, str):
+        try:
+            parsed = json.loads(mgmt_data)
+            if isinstance(parsed, dict):
+                # From new get_top_management() format
+                mgmt_data = []
+                for item in parsed.get("current", []):
+                    item["status"] = "Current"
+                    mgmt_data.append(item)
+                for item in parsed.get("past", []):
+                    item["status"] = "Past"
+                    mgmt_data.append(item)
+            elif isinstance(parsed, list):
+                mgmt_data = parsed
+            else:
+                mgmt_data = []
+        except Exception:
+            # Try to parse plain string: "Name — Role (Status); ..."
+            entries = re.split(r";\s*", mgmt_data.strip())
+            mgmt_data = []
+            for entry in entries:
+                if not entry.strip():
+                    continue
+                match = re.match(r"(.+?)\s*[—-]\s*(.+?)(?:\s*\((Current|Past)\))?$", entry.strip())
+                if match:
+                    name, position, status = match.groups()
+                    mgmt_data.append({
+                        "name": name.strip(),
+                        "position": position.strip(),
+                        "status": status or "Current"
+                    })
+                else:
+                    mgmt_data.append({"name": entry.strip(), "position": "", "status": "Current"})
+
+    # Ensure it’s a valid list
+    if not isinstance(mgmt_data, list) or not mgmt_data:
+        st.info("No top management data available.")
+        return
+
+    df = pd.DataFrame(mgmt_data)
+    if not {"name", "position"}.issubset(df.columns):
+        st.info("No valid management data found.")
+        return
+
+    # Clean & normalize
+    df = df.rename(columns={"name": "Name", "position": "Position", "status": "Status"})
+    df["Status"] = df["Status"].fillna("Current").apply(lambda x: x.capitalize())
+
+    # -------------------------
+    # 2️⃣ Split into Current & Past
+    # -------------------------
+    current_df = df[df["Status"] == "Current"][["Name", "Position"]].drop_duplicates().fillna("-")
+    past_df = df[df["Status"] == "Past"][["Name", "Position"]].drop_duplicates().fillna("-")
+
+    # -------------------------
+    # 3️⃣ Display
+    # -------------------------
+    if not current_df.empty:
+        st.markdown("### 👤 Current Leadership")
+        st.dataframe(
+            current_df.reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True
+        )
+    elif past_df.empty:
+        st.info("No leadership data available.")
+
+    if not past_df.empty:
+        st.markdown("### 🕰️ Past Leadership")
+        st.dataframe(
+            past_df.reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True
+        )
+
+# def show_subsidiaries(subsidiaries, context_label="main"):
+#     """
+#     Displays subsidiaries in a clean expandable table-like layout.
+#     ✅ Handles duplicate widget keys across reruns and contexts.
+#     ✅ Automatically expands descriptions after 2 lines.
+#     """
+#     if not subsidiaries:
+#         st.info("No subsidiaries found.")
+#         return
+#
+#     st.markdown("### 🏢 Subsidiaries Overview")
+#
+#     if "expanded_subs" not in st.session_state:
+#         st.session_state["expanded_subs"] = {}
+#
+#     for i, sub in enumerate(subsidiaries):
+#         name = sub.get("name", "Unknown")
+#         logo = sub.get("logo", "")
+#         desc = sub.get("description", "")
+#         sector = sub.get("sector", "N/A")
+#         country = sub.get("country", "N/A")
+#         linkedin_members = sub.get("linkedin_members", 0)
+#         url = sub.get("url", "")
+#
+#         # ✅ Truly unique ID using UUID + index + context
+#         unique_id = hashlib.md5(f"{context_label}_{name}_{i}_{uuid.uuid4()}".encode()).hexdigest()[:12]
+#
+#         short_desc = " ".join(desc.split()[:30]) + ("..." if len(desc.split()) > 30 else "")
+#         expanded = st.session_state["expanded_subs"].get(unique_id, False)
+#
+#         with st.container():
+#             st.markdown("---")
+#             cols = st.columns([1, 6])
+#
+#             with cols[0]:
+#                 if logo:
+#                     st.image(logo, width=50)
+#                 else:
+#                     st.markdown("🧩")
+#
+#             with cols[1]:
+#                 st.markdown(f"**{name}**  \n🌍 **{country}**  |  🏢 **{sector}**  |  👥 **{linkedin_members} members**")
+#                 if url:
+#                     st.markdown(f"[🌐 Visit Website]({url})")
+#
+#                 if expanded:
+#                     st.markdown(desc)
+#                     if st.button("Show less", key=f"less_{unique_id}"):
+#                         st.session_state["expanded_subs"][unique_id] = False
+#                         st.rerun()
+#                 else:
+#                     st.markdown(short_desc)
+#                     if st.button("Expand description", key=f"more_{unique_id}"):
+#                         st.session_state["expanded_subs"][unique_id] = True
+#                         st.rerun()
+
+# ============================================================
+# 🔹 Search Input
+# ============================================================
+search_query = st.text_input("🔎 Enter company/topic (or paste URL directly)", placeholder="Google, ChatGPT, or https://example.com")
+
+# ============================================================
+# 🔹 Fetch Search Results
+# ============================================================
 if search_query.strip():
     st.subheader("🔗 Top Page 1 Search Results")
     try:
-        params = {
-            "q": search_query,
-            "hl": "en",
-            "gl": "us",
-            "num": 10,
-            "api_key": SERPAPI_KEY
-        }
+        params = {"q": search_query, "hl": "en", "gl": "us", "num": 10, "api_key": SERPAPI_KEY}
         search = GoogleSearch(params)
         results = search.get_dict().get("organic_results", [])
-        page1_links = []
-
         if results:
             for idx, res in enumerate(results):
                 title = res.get("title") or res.get("link", "")
                 link = res.get("link", "")
                 st.markdown(f"{idx + 1}. [{title}]({link})")
-                page1_links.append(link)
         else:
             st.info("No search results found for this query.")
-
     except Exception as e:
         st.error(f"Error fetching search results: {e}")
 
-# --- Analyze Company ---
+# ============================================================
+# 🔹 Analyze Company
+# ============================================================
 if st.button("🚀 Analyze Company"):
     if not search_query.strip():
         st.warning("⚠️ Please enter a company name or URL")
@@ -75,174 +325,68 @@ if st.button("🚀 Analyze Company"):
         progress = st.progress(0)
         status = st.empty()
 
-        summary = ""
-        description = ""
-        corporate_events = ""
-        content_to_use = ""
-        mgmt_list = []
-        mgmt_text = ""
-
+        summary, description, corporate_events, mgmt_list, mgmt_text, subsidiaries = "", "", [], [], "", []
         try:
-            # --- Step 1: Wikipedia ---
             status.text("📘 Reading company background...")
             wiki_text = get_wikipedia_summary(search_query)
-            content_to_use = wiki_text
             progress.progress(20)
 
-            # --- Step 2: GPT Company Details Extraction ---
             status.text("🧠 Extracting company structure...")
             summary = generate_summary(search_query, text=wiki_text)
             progress.progress(40)
 
-            # --- Step 3: Check for missing fields and fix ---
-            required_fields = [
-                "CEO", "Founder", "Headquarters",
-                "Website", "Year Founded", "LinkedIn"
-            ]
-            missing = [
-                field for field in required_fields
-                if f"{field}:" in summary and summary.split(f"{field}:")[1].strip() == ""
-            ]
+            status.text("📝 Writing company profile...")
+            description = generate_description(search_query, text=wiki_text, company_details=summary)
+            progress.progress(60)
 
-            if missing:
-                status.text("🔍 Searching for missing info...")
-                from searxng_analyzer import openrouter_chat
-
-                fix_prompt = f"""
-                You are an expert data researcher. We are missing the following fields for **{search_query}**:
-                {', '.join(missing)}.
-                Find accurate, up-to-date info for these fields ONLY.
-                Format your answer exactly as:
-                - Field: Value
-                - Field: Value
-                (no extra text)
-                """
-
-                missing_filled = openrouter_chat(
-                    "openai/gpt-4o-mini", fix_prompt, "Missing Field Finder"
-                )
-
-                if missing_filled:
-                    for line in missing_filled.split("\n"):
-                        if ":" in line:
-                            key, val = line.split(":", 1)
-                            summary = summary.replace(
-                                f"{key.strip()}:", f"{key.strip()}: {val.strip()}"
-                            )
-
-                progress.progress(60)
-
-            # --- Step 4: Website fallback if fields still missing ---
-            still_missing = [
-                field for field in required_fields
-                if f"{field}:" in summary and summary.split(f"{field}:")[1].strip() == ""
-            ]
-
-            if still_missing:
-                status.text("🌐 Exploring company website...")
-                base_urls = [
-                    f"https://{search_query.lower().replace(' ', '')}.com/about",
-                    f"https://{search_query.lower().replace(' ', '')}.com/about-us",
-                    f"https://{search_query.lower().replace(' ', '')}.com/company",
-                    f"https://{search_query.lower().replace(' ', '')}.com/who-we-are",
-                    f"https://{search_query.lower().replace(' ', '')}.com/leadership",
-                    f"https://{search_query.lower().replace(' ', '')}.com/team"
-                ]
-
-                website_text = ""
-                for url in base_urls:
-                    try:
-                        site_text = scrape_website(base_url=url, company_name=search_query)
-                        if site_text and len(site_text) > len(website_text):
-                            website_text = site_text
-                    except:
-                        continue
-
-                if website_text.strip():
-                    summary = generate_summary(search_query, text=website_text)
-                    description = generate_description(
-                        search_query, text=website_text, company_details=summary
-                    )
-                    content_to_use = website_text
-
-                progress.progress(80)
-
-            # --- Step 5: Final description ---
-            if not description.strip():
-                status.text("📝 Writing company profile...")
-                description = generate_description(
-                    search_query, text=wiki_text, company_details=summary
-                )
-                progress.progress(90)
-
-            # --- Step 6: Corporate Events ---
             status.text("📅 Fetching corporate events...")
-            corporate_events = generate_corporate_events(search_query, text=content_to_use) or "No corporate events found."
-            progress.progress(92)
+            corporate_events = generate_corporate_events(search_query, text=wiki_text)
+            progress.progress(75)
 
-            # --- Step 7: Top management (NEW) ---
-            status.text("👥 Fetching top management (current + recent)...")
-            mgmt_list, mgmt_text = get_top_management(search_query, text=content_to_use)
-            if not mgmt_text:
-                mgmt_text = "No top management data found."
-            progress.progress(96)
+            status.text("👥 Fetching top management...")
+            mgmt_list, mgmt_text = get_top_management(search_query, text=wiki_text)
+            progress.progress(85)
 
-            # --- Step 8: Store & Display (unchanged flow, but include top_management) ---
-            store_report(search_query, summary, description, corporate_events, top_management=mgmt_text)
+            # status.text("🏢 Fetching subsidiaries...")
+            # subsidiaries = get_subsidiaries(search_query) or generate_subsidiary_data(search_query)
+            progress.progress(95)
 
-            store_search(
-                search_query,
-                content_to_use,
-                summary,
-                description,
-                corporate_events=corporate_events,
-                top_management=mgmt_text
-            )
+            # Store report and search data
+            store_report(search_query, summary, description, json.dumps(corporate_events), json.dumps(mgmt_list))
+            store_search(search_query, wiki_text, summary, description, json.dumps(corporate_events), json.dumps(mgmt_list))
 
             st.success("✅ Company data successfully fetched!")
+            progress.progress(100)
+            status.text("✅ Done")
 
             st.subheader("📈 Valuation Summary Report")
             st.markdown(summary)
 
-            st.subheader("🏢 Company Description (5–6 lines)")
+            st.subheader("🏢 Company Description")
             st.text(description)
 
             st.subheader("📅 Corporate Events")
-            # Use markdown to allow basic formatting if any
-            st.text(corporate_events)
+            show_corporate_events(corporate_events)
 
             st.subheader("👥 Top Management")
-            # display the same formatted string as the analysis
-            st.text(mgmt_text)
+            show_top_management(mgmt_list)
 
-            # Prepare PDF (include corporate events and top management)
-            events_text = f"\n\nCorporate Events:\n{corporate_events}" if corporate_events else ""
-            mgmt_text_for_pdf = f"\n\nTop Management:\n{mgmt_text}" if mgmt_text else ""
+            # st.subheader("🏢 Subsidiaries")
+            # show_subsidiaries(subsidiaries)
 
-            pdf_file = create_pdf_from_text(
-                title=search_query,
-                summary=f"{description}\n\n{summary}{events_text}{mgmt_text_for_pdf}"
-            )
+            events_text = f"\n\nCorporate Events:\n{json.dumps(corporate_events)}" if corporate_events else ""
+            mgmt_text_pdf = f"\n\nTop Management:\n{mgmt_text}" if mgmt_text else ""
+            pdf_file = create_pdf_from_text(title=search_query, summary=f"{description}\n\n{summary}{events_text}{mgmt_text_pdf}")
 
-            # Provide download button for current analysis
-            try:
-                st.download_button(
-                    label="📄 Download PDF",
-                    data=pdf_file,
-                    file_name=f"{search_query.replace(' ', '_')}.pdf",
-                    mime="application/pdf"
-                )
-            except Exception as e:
-                st.warning(f"Could not generate PDF download: {e}")
-
-            progress.progress(100)
-            status.text("✅ Done")
+            st.download_button("📄 Download PDF", data=pdf_file, file_name=f"{search_query.replace(' ', '_')}.pdf", mime="application/pdf")
 
         except Exception as e:
             status.text("")
             st.error(f"⚠️ Error during analysis: {e}")
 
-# --- Previous Reports ---
+# ============================================================
+# 🔹 Previous Valuation Reports
+# ============================================================
 st.divider()
 st.subheader("🗂️ Previous Valuation Reports")
 
@@ -257,28 +401,41 @@ if reports:
             st.write(r.get('description', 'No description available.'))
 
             st.subheader("📅 Corporate Events")
-            st.write(r.get('corporate_events', 'No events available.'))
+            corp_data_raw = r.get("corporate_events")
+
+            # ✅ Ensure the data is a valid Python list
+            if isinstance(corp_data_raw, str):
+                try:
+                    corp_data = json.loads(corp_data_raw)
+                    if isinstance(corp_data, str):  # Handle nested JSON strings
+                        corp_data = json.loads(corp_data)
+                except:
+                    corp_data = normalize_corporate_events(corp_data_raw)
+            else:
+                corp_data = corp_data_raw or []
+
+            show_corporate_events(corp_data)
 
             st.subheader("👥 Top Management")
-            st.write(r.get('top_management', 'No top management available.'))
+            mgmt_list = normalize_top_management(r.get("top_management"))
+            show_top_management(mgmt_list)
 
-            # Include top_management in report PDF
-            events_text = f"\n\nCorporate Events:\n{r.get('corporate_events', '')}" if r.get('corporate_events') else ""
-            mgmt_text = f"\n\nTop Management:\n{r.get('top_management', '')}" if r.get('top_management') else ""
             pdf_file = create_pdf_from_text(
                 title=r.get('company', 'Report'),
-                summary=f"{r.get('description', '')}\n\n{r.get('summary', '')}{events_text}{mgmt_text}"
+                summary=f"{r.get('description', '')}\n\n{r.get('summary', '')}"
             )
 
             st.download_button(
-                label="📄 Download PDF",
+                "📄 Download PDF",
                 data=pdf_file,
                 file_name=f"{r.get('company', 'report').replace(' ', '_')}.pdf",
                 mime="application/pdf",
                 key=f"download_report_{idx}"
             )
 
-# --- Previous Search History ---
+# ============================================================
+# 🔹 Previous Search History
+# ============================================================
 st.divider()
 st.subheader("🕘 Previous Search History")
 
@@ -292,25 +449,48 @@ if history:
         seen_queries.add(query)
 
         with st.expander(f"🔎 {query}"):
-            raw_text = (h.get('results', '') or '')[:500] + "..."
-            st.markdown(f"**Raw Results:**\n{raw_text}")
             st.markdown(f"**AI Description:**\n{h.get('description', '')}")
             st.markdown(f"**AI Summary:**\n{h.get('summary', '')}")
-            st.markdown(f"**Corporate Events:**\n{h.get('corporate_events', 'No events available.')}")
-            st.markdown(f"**Top Management:**\n{h.get('top_management', 'No top management available.')}")
 
-            # Include top_management in history PDF
-            events_text = f"\n\nCorporate Events:\n{h.get('corporate_events', '')}" if h.get('corporate_events') else ""
-            mgmt_text = f"\n\nTop Management:\n{h.get('top_management', '')}" if h.get('top_management') else ""
+            st.subheader("📅 Corporate Events")
+            corp_data_raw = r.get("corporate_events")
+
+              # ✅ Add this import once at the top of app.py (if not already)
+
+            # ✅ Ensure corporate events are always parsed into a list of dicts
+            corp_data = []
+            if corp_data_raw:
+                if isinstance(corp_data_raw, str):
+                    try:
+                        corp_data = json.loads(corp_data_raw)
+                        if isinstance(corp_data, str):
+                            corp_data = json.loads(corp_data)
+                    except Exception:
+                        try:
+                            corp_data = ast.literal_eval(corp_data_raw)
+                        except Exception:
+                            corp_data = normalize_corporate_events(corp_data_raw)
+                elif isinstance(corp_data_raw, list):
+                    corp_data = corp_data_raw
+
+            # ✅ Normalize format (convert text → dict if needed)
+            corp_data = normalize_corporate_events(corp_data)
+
+            # ✅ Display like live analysis (table form)
+            show_corporate_events(corp_data)
+
+
+
+
+            st.subheader("👥 Top Management")
+            mgmt_list = normalize_top_management(h.get("top_management"))
+            show_top_management(mgmt_list)
+
+            # st.subheader("🏢 Subsidiaries")
+            # show_subsidiaries(get_subsidiaries(query))
+
             pdf_file = create_pdf_from_text(
                 title=query,
-                summary=f"{h.get('description', '')}\n\n{h.get('summary', '')}{events_text}{mgmt_text}"
+                summary=f"{h.get('description', '')}\n\n{h.get('summary', '')}"
             )
-
-            st.download_button(
-                label="📄 Download PDF",
-                data=pdf_file,
-                file_name=f"{query.replace(' ', '_')}.pdf",
-                mime="application/pdf",
-                key=f"download_history_{idx}"
-            )
+            st.download_button("📄 Download PDF", data=pdf_file, file_name=f"{query.replace(' ', '_')}.pdf", mime="application/pdf", key=f"download_history_{idx}")

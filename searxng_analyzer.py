@@ -12,7 +12,168 @@ import time
 import json
 from serpapi import GoogleSearch
 from searxng_crawler import scrape_website
-# from searxng_db import store_subsidiaries
+from searxng_db import store_subsidiaries
+from bs4 import BeautifulSoup
+import base64
+
+def fetch_logo_free(company_name: str):
+    """
+    Fetches a company's logo using 100% free and stable sources.
+    Fallback order:
+        1️⃣ Wikipedia (Commons image)
+        2️⃣ DuckDuckGo Images (scraped)
+        3️⃣ Favicon generator
+    Returns:
+        str - Base64 data URI or working image URL.
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    # ---------------------------------------------
+    # 1️⃣ Try Wikipedia / Wikimedia Commons
+    # ---------------------------------------------
+    try:
+        wiki_url = f"https://en.wikipedia.org/wiki/{company_name.replace(' ', '_')}"
+        r = requests.get(wiki_url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            infobox = soup.select_one("table.infobox img")
+            if infobox and infobox.get("src"):
+                img_url = infobox["src"]
+                if img_url.startswith("//"):
+                    img_url = "https:" + img_url
+                img_data = requests.get(img_url, headers=headers, timeout=10).content
+                b64 = base64.b64encode(img_data).decode("utf-8")
+                mime = "image/png" if ".png" in img_url.lower() else "image/jpeg"
+                print(f"✅ Wikipedia logo found for {company_name}")
+                return f"data:{mime};base64,{b64}"
+    except Exception as e:
+        print(f"⚠️ Wikipedia logo fetch failed for {company_name}: {e}")
+
+    # ---------------------------------------------
+    # 2️⃣ Try DuckDuckGo Image Search
+    # ---------------------------------------------
+    try:
+        search_url = f"https://duckduckgo.com/html/?q={company_name.replace(' ', '+')}+logo"
+        r = requests.get(search_url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            img_tags = soup.find_all("img")
+            for img in img_tags:
+                src = img.get("src") or ""
+                if re.search(r"\.(png|jpg|jpeg|svg)", src, re.I):
+                    if src.startswith("//"):
+                        src = "https:" + src
+                    elif src.startswith("/"):
+                        src = "https://duckduckgo.com" + src
+                    img_data = requests.get(src, headers=headers, timeout=10).content
+                    b64 = base64.b64encode(img_data).decode("utf-8")
+                    mime = "image/png" if ".png" in src.lower() else "image/jpeg"
+                    print(f"✅ DuckDuckGo logo found for {company_name}")
+                    return f"data:{mime};base64,{b64}"
+    except Exception as e:
+        print(f"⚠️ DuckDuckGo logo fetch failed for {company_name}: {e}")
+
+    # ---------------------------------------------
+    # 3️⃣ Fallback favicon (guaranteed to work)
+    # ---------------------------------------------
+    try:
+        domain = company_name.lower().replace(" ", "") + ".com"
+        favicon_url = f"https://www.google.com/s2/favicons?sz=128&domain_url={domain}"
+        r = requests.get(favicon_url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            img_data = r.content
+            b64 = base64.b64encode(img_data).decode("utf-8")
+            mime = r.headers.get("Content-Type", "image/png")
+            print(f"✅ Favicon used for {company_name}")
+            return f"data:{mime};base64,{b64}"
+    except Exception as e:
+        print(f"⚠️ Favicon fetch failed for {company_name}: {e}")
+
+    # ---------------------------------------------
+    # If everything fails — use Google fallback
+    # ---------------------------------------------
+    print(f"⚠️ No logo found, returning generic fallback for {company_name}")
+    return "https://www.google.com/s2/favicons?sz=128&domain_url=google.com"
+
+
+def fetch_logo_from_google(company_name: str):
+    """
+    Searches Google Images (via SerpAPI) for a company logo.
+    Returns a base64-encoded data URI (so the logo always loads in UI).
+    """
+    try:
+        print(f"🖼️ Searching Google for logo: {company_name}")
+        params = {
+            "q": f"{company_name} official company logo filetype:png OR filetype:svg",
+            "tbm": "isch",
+            "num": 5,
+            "api_key": SERPAPI_KEY,
+        }
+        search = GoogleSearch(params)
+        results = search.get_dict().get("images_results", [])
+
+        for img in results:
+            url = img.get("original") or img.get("thumbnail") or img.get("link")
+            if not url or not url.startswith("http"):
+                continue
+
+            try:
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200 and "image" in r.headers.get("Content-Type", ""):
+                    mime = r.headers.get("Content-Type", "image/png")
+                    b64 = base64.b64encode(r.content).decode("utf-8")
+                    print(f"✅ Logo found for {company_name}")
+                    return f"data:{mime};base64,{b64}"
+            except Exception as e:
+                print(f"⚠️ Failed logo URL for {company_name}: {e}")
+                continue
+
+        # Fallback to favicon
+        domain = company_name.lower().replace(" ", "") + ".com"
+        print(f"⚠️ All Google logo attempts failed for {company_name}, using fallback.")
+        return f"https://www.google.com/s2/favicons?sz=64&domain_url={domain}"
+
+    except Exception as e:
+        print(f"❌ Logo fetch error for {company_name}: {e}")
+        return "https://www.google.com/s2/favicons?sz=64&domain_url=google.com"
+
+
+def fetch_and_encode_logo(url):
+    """Downloads a logo and returns a base64-encoded data URI for Streamlit display."""
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        content_type = r.headers.get("Content-Type", "image/png")
+        b64 = base64.b64encode(r.content).decode("utf-8")
+        return f"data:{content_type};base64,{b64}"
+    except Exception as e:
+        print(f"⚠️ Logo fetch failed: {e}")
+        return "https://www.google.com/s2/favicons?sz=64&domain_url=google.com"
+    
+
+def get_google_logo(company_name: str):
+    """
+    Searches Google Images (via SerpAPI) for an official company logo.
+    Returns a direct image URL if found, else a safe fallback favicon.
+    """
+    try:
+        search = GoogleSearch({
+            "q": f"{company_name} company logo site:pngtree.com OR site:seeklogo.com OR site:wikipedia.org OR site:commons.wikimedia.org",
+            "tbm": "isch",
+            "num": 5,
+            "api_key": SERPAPI_KEY,
+        })
+        results = search.get_dict().get("images_results", [])
+        for img in results:
+            url = img.get("original") or img.get("thumbnail") or img.get("link")
+            if url and url.startswith("http"):
+                return url
+        # fallback favicon
+        domain = company_name.lower().replace(" ", "") + ".com"
+        return f"https://www.google.com/s2/favicons?sz=64&domain_url={domain}"
+    except Exception as e:
+        print(f"⚠️ Logo search failed for {company_name}: {e}")
+        return "https://www.google.com/s2/favicons?sz=64&domain_url=google.com"
 
 
 # ============================================================
@@ -535,99 +696,141 @@ Do NOT invent data. Focus on what the company does, its products/services, marke
 # ============================================================
 # 🔹 Subsidiary Data Generator
 # ============================================================
-# def generate_subsidiary_data(company_name: str, company_description: str = ""):
-#     """
-#     Fetches accurate current subsidiaries of a company using SerpAPI and AI enrichment (OpenRouter).
-#     Stores full description (no truncation).
-#     """
+def get_wikipedia_subsidiaries(company_name: str):
+    """
+    Attempts to extract subsidiaries directly from the company's Wikipedia page.
+    Returns a list of subsidiary names if available.
+    """
+    try:
+        url = f"https://en.wikipedia.org/wiki/{company_name.replace(' ', '_')}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return []
 
-#     print(f"🏢 Generating enriched subsidiary data for: {company_name}")
-#     subsidiaries = []
+        soup = BeautifulSoup(response.text, "html.parser")
+        subsidiaries = set()
 
-#     # Step 1️⃣: Get initial links from SerpAPI
-#     query = f"{company_name} subsidiaries OR child companies site:linkedin.com OR site:crunchbase.com OR site:craft.co OR site:wikipedia.org"
-#     serp_results = []
-#     try:
-#         params = {"q": query, "hl": "en", "gl": "us", "num": 10, "api_key": SERPAPI_KEY}
-#         search = GoogleSearch(params)
-#         serp_data = search.get_dict().get("organic_results", [])
-#         serp_results = [r.get("link") for r in serp_data if r.get("link")]
-#         print(f"✅ Found {len(serp_results)} possible subsidiary links from SerpAPI.")
-#     except Exception as e:
-#         print(f"⚠️ SerpAPI subsidiary fetch failed: {e}")
+        # 1️⃣ Try infobox section
+        for row in soup.select("table.infobox tr"):
+            header = row.find("th")
+            if header and "Subsidiaries" in header.text:
+                links = row.find_all("a")
+                for link in links:
+                    text = link.get_text(strip=True)
+                    if text and not text.startswith(("http", "#")):
+                        subsidiaries.add(text)
 
-#     # Step 2️⃣: Use OpenRouter AI to extract structured subsidiaries
-#     serp_context = "\n".join(serp_results[:8])
-#     prompt = f"""
-# You are a professional corporate researcher.
+        # 2️⃣ Try separate "Subsidiaries" headings
+        for h2 in soup.find_all("h2"):
+            if "Subsidiaries" in h2.get_text():
+                ul = h2.find_next("ul")
+                if ul:
+                    for li in ul.find_all("li"):
+                        text = li.get_text(strip=True)
+                        if text:
+                            subsidiaries.add(text)
 
-# TASK:
-# Using the context below, list all **current subsidiaries** of "{company_name}".
-# Return ONLY valid JSON.
-# Each subsidiary object must have these exact fields:
-# - name
-# - url
-# - description
-# - sector
-# - linkedin_members
-# - country
-# - logo
+        return list(subsidiaries)
+    except Exception as e:
+        print(f"⚠️ Wikipedia subsidiary fetch failed: {e}")
+        return []
 
-# Use only verified and operational subsidiaries.
 
-# Context:
-# {company_description}
+def generate_subsidiary_data(company_name: str, company_description: str = ""):
+    """
+    Fetches accurate current subsidiaries of a company using Wikipedia + SerpAPI + AI enrichment.
+    Stores full description (no truncation).
+    """
+    print(f"🏢 Generating enriched subsidiary data for: {company_name}")
+    subsidiaries = []
 
-# Additional links:
-# {serp_context}
-# """
-#     ai_response = openrouter_chat("anthropic/claude-3.5-sonnet", prompt, "Subsidiaries Extractor")
+    # Step 1️⃣: Wikipedia first
+    wiki_subs = get_wikipedia_subsidiaries(company_name)
+    if wiki_subs:
+        print(f"✅ Found {len(wiki_subs)} subsidiaries from Wikipedia: {wiki_subs[:8]}")
 
-#     try:
-#         match = re.search(r'\[.*\]', ai_response, re.S)
-#         if match:
-#             subsidiaries = json.loads(match.group(0))
-#             print(f"✅ Extracted {len(subsidiaries)} subsidiaries from AI model.")
-#     except Exception as e:
-#         print(f"⚠️ AI subsidiary JSON parse error: {e}")
-#         return []
+    # Step 2️⃣: Gather broader context via SerpAPI
+    query = f"{company_name} subsidiaries OR child companies site:linkedin.com OR site:crunchbase.com OR site:craft.co OR site:wikipedia.org"
+    serp_results = []
+    try:
+        params = {"q": query, "hl": "en", "gl": "us", "num": 30, "api_key": SERPAPI_KEY}
+        search = GoogleSearch(params)
+        serp_data = search.get_dict().get("organic_results", [])
+        serp_results = [r.get("link") for r in serp_data if r.get("link")]
+        print(f"✅ Found {len(serp_results)} possible subsidiary links from SerpAPI.")
+    except Exception as e:
+        print(f"⚠️ SerpAPI subsidiary fetch failed: {e}")
 
-#     # Step 3️⃣: Add fallback logo + store in DB
-#     def get_favicon(url):
-#         try:
-#             domain = re.sub(r"^https?://(www\.)?", "", url).split("/")[0]
-#             return f"https://www.google.com/s2/favicons?sz=64&domain_url={domain}"
-#         except:
-#             return ""
+    # Step 3️⃣: AI enrichment with Wikipedia + Serp context
+    serp_context = "\n".join(serp_results[:20])
+    prompt = f"""
+You are a professional corporate researcher.
 
-#     for sub in subsidiaries:
-#         # Add fallback logo
-#         if not sub.get("logo") and sub.get("url"):
-#             sub["logo"] = get_favicon(sub["url"])
+TASK:
+Using the Wikipedia list and online context, produce a structured JSON array of **current subsidiaries** of "{company_name}".
+Each subsidiary object must contain:
+- name
+- url
+- description
+- sector
+- linkedin_members
+- country
+- logo (use company favicon URL if possible)
 
-#         # Clean LinkedIn member counts
-#         if not isinstance(sub.get("linkedin_members"), int):
-#             try:
-#                 sub["linkedin_members"] = int(re.sub(r"\D", "", str(sub["linkedin_members"]))) if sub.get("linkedin_members") else 0
-#             except:
-#                 sub["linkedin_members"] = 0
+Wikipedia subsidiaries:
+{wiki_subs}
 
-#         # Store full description (no truncation)
-#         desc = sub.get("description", "").strip()
-#         sub["description"] = desc
+Additional links:
+{serp_context}
 
-#         # Store in DB
-#         try:
-#             store_subsidiaries(
-#                 company=company_name,
-#                 name=sub.get("name", ""),
-#                 logo=sub.get("logo", ""),
-#                 description=sub.get("description", ""),
-#                 sector=sub.get("sector", ""),
-#                 linkedin_members=sub.get("linkedin_members", 0),
-#                 country=sub.get("country", "")
-#             )
-#         except Exception as db_err:
-#             print(f"⚠️ Database store error for {sub.get('name')}: {db_err}")
+Return ONLY valid JSON array (no text, no comments).
+"""
 
-#     return subsidiaries
+    ai_response = openrouter_chat("anthropic/claude-3.5-sonnet", prompt, "Subsidiaries Extractor")
+
+    try:
+        match = re.search(r'\[.*\]', ai_response, re.S)
+        if match:
+            subsidiaries = json.loads(match.group(0))
+            print(f"✅ Extracted {len(subsidiaries)} subsidiaries from AI model.")
+    except Exception as e:
+        print(f"⚠️ AI subsidiary JSON parse error: {e}")
+        return []
+
+    # Step 4️⃣: Logo guarantee + data cleaning
+    def get_favicon(url):
+        try:
+            domain = re.sub(r"^https?://(www\.)?", "", url).split("/")[0]
+            return f"https://www.google.com/s2/favicons?sz=64&domain_url={domain}"
+        except Exception:
+            return "https://www.google.com/s2/favicons?sz=64&domain_url=google.com"
+
+    for sub in subsidiaries:
+        # --- Ensure logo always exists ---
+        url = sub.get("url", "")
+        if url and not url.startswith("http"):
+            url = "https://" + url
+        sub["url"] = url
+
+        # ✅ Try fetching a real logo from Google first
+        if not sub.get("logo"):
+            sub["logo"] = fetch_logo_free(sub.get("name") or sub.get("url") or company_name)
+
+
+
+
+        if not isinstance(sub.get("linkedin_members"), int):
+            try:
+                sub["linkedin_members"] = int(re.sub(r"\D", "", str(sub["linkedin_members"]))) if sub.get("linkedin_members") else 0
+            except:
+                sub["linkedin_members"] = 0
+
+        sub["description"] = sub.get("description", "").strip()
+
+        # ✅ Store using list-based DB interface
+        try:
+            store_subsidiaries(company_name, [sub])
+        except Exception as db_err:
+            print(f"⚠️ Database store error for {sub.get('name')}: {db_err}")
+
+    return subsidiaries

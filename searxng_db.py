@@ -35,8 +35,8 @@ def clean_text(text):
 # ============================================================
 def store_report(company, summary, description, corporate_events="", top_management=""):
     """
-    Stores a valuation report for a company.
-    Subsidiaries are stored separately in company_subsidiaries.
+    Always insert a new record (no overwrite, no deduplication).
+    Keeps full history of each run.
     """
     data = {
         "company": clean_text(company),
@@ -45,13 +45,14 @@ def store_report(company, summary, description, corporate_events="", top_managem
         "corporate_events": clean_text(corporate_events),
         "top_management": clean_text(top_management),
     }
+
     try:
         response = supabase.table("valuation_reports").insert(data).execute()
         if response.data:
-            print(f"✅ Report stored successfully for: {company}")
+            print(f"✅ New report stored for: {company} (ID: {response.data[0].get('id', 'unknown')})")
             return response.data
         else:
-            print(f"⚠️ Report not stored for: {company}")
+            print(f"⚠️ No response when inserting report for: {company}")
             return False
     except Exception as e:
         print(f"⚠️ Exception while storing report for {company}: {e}")
@@ -78,8 +79,7 @@ def get_reports():
 # ============================================================
 def store_search(query, results, summary, description, corporate_events="", top_management=""):
     """
-    Stores a search history entry.
-    Subsidiaries are not stored here; they go in company_subsidiaries.
+    Always insert new record (keeps full query log, even if duplicate).
     """
     data = {
         "query": clean_text(query),
@@ -89,13 +89,14 @@ def store_search(query, results, summary, description, corporate_events="", top_
         "corporate_events": clean_text(corporate_events),
         "top_management": clean_text(top_management),
     }
+
     try:
         response = supabase.table("search_history").insert(data).execute()
         if response.data:
-            print(f"✅ Search history stored for query: {query}")
+            print(f"✅ Search history inserted for: {query}")
             return response.data
         else:
-            print(f"⚠️ Search history not stored for: {query}")
+            print(f"⚠️ Insert failed for search: {query}")
             return False
     except Exception as e:
         print(f"⚠️ Exception while storing search history for {query}: {e}")
@@ -122,8 +123,8 @@ def get_search_history():
 # ============================================================
 def store_subsidiaries(company, subsidiaries):
     """
-    Store multiple subsidiary records for a company in company_subsidiaries.
-    Expects a list of dictionaries.
+    Always insert new subsidiary rows.
+    Allows duplicates (useful for comparison and historical tracking).
     """
     if not subsidiaries or not isinstance(subsidiaries, list):
         return
@@ -143,20 +144,24 @@ def store_subsidiaries(company, subsidiaries):
     try:
         response = supabase.table("company_subsidiaries").insert(data).execute()
         if response.data:
-            print(f"✅ {len(data)} subsidiaries stored for {company}")
+            print(f"✅ Inserted {len(data)} subsidiaries for {company} (duplicates allowed)")
             return response.data
+        else:
+            print(f"⚠️ No response inserting subsidiaries for {company}")
+            return False
     except Exception as e:
         print(f"⚠️ Failed to store subsidiaries for {company}: {e}")
         return False
 
 
 def get_subsidiaries(company):
-    """Retrieve all subsidiaries for a given company."""
+    """Retrieve all subsidiaries for a given company (including duplicates)."""
     try:
         response = (
             supabase.table("company_subsidiaries")
             .select("*")
             .eq("company", company)
+            .order("id", desc=True)
             .execute()
         )
         return response.data if response.data else []

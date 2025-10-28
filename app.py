@@ -19,14 +19,14 @@ from searxng_analyzer import (
     get_wikipedia_summary,
     generate_corporate_events,
     get_top_management,
-    # generate_subsidiary_data
+    generate_subsidiary_data
 )
 from searxng_db import (
     store_report,
     get_reports,
     store_search,
     get_search_history,
-    # get_subsidiaries 
+    get_subsidiaries 
 )
 from searxng_pdf import create_pdf_from_text
 
@@ -139,7 +139,7 @@ def show_corporate_events(corporate_events):
         
         cols = [c for c in ["Date", "Event Description", "Type", "Value"] if c in df.columns]
         if cols:
-            st.dataframe(df[cols], use_container_width=True, hide_index=True)
+            st.dataframe(df[cols], width="stretch", hide_index=True)
         else:
             st.info("No valid corporate events data available.")
     else:
@@ -221,7 +221,7 @@ def show_top_management(mgmt_data):
         st.markdown("### 👤 Current Leadership")
         st.dataframe(
             current_df.reset_index(drop=True),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
     elif past_df.empty:
@@ -231,65 +231,63 @@ def show_top_management(mgmt_data):
         st.markdown("### 🕰️ Past Leadership")
         st.dataframe(
             past_df.reset_index(drop=True),
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
 
-# def show_subsidiaries(subsidiaries, context_label="main"):
-#     """
-#     Displays subsidiaries in a clean expandable table-like layout.
-#     ✅ Handles duplicate widget keys across reruns and contexts.
-#     ✅ Automatically expands descriptions after 2 lines.
-#     """
-#     if not subsidiaries:
-#         st.info("No subsidiaries found.")
-#         return
-#
-#     st.markdown("### 🏢 Subsidiaries Overview")
-#
-#     if "expanded_subs" not in st.session_state:
-#         st.session_state["expanded_subs"] = {}
-#
-#     for i, sub in enumerate(subsidiaries):
-#         name = sub.get("name", "Unknown")
-#         logo = sub.get("logo", "")
-#         desc = sub.get("description", "")
-#         sector = sub.get("sector", "N/A")
-#         country = sub.get("country", "N/A")
-#         linkedin_members = sub.get("linkedin_members", 0)
-#         url = sub.get("url", "")
-#
-#         # ✅ Truly unique ID using UUID + index + context
-#         unique_id = hashlib.md5(f"{context_label}_{name}_{i}_{uuid.uuid4()}".encode()).hexdigest()[:12]
-#
-#         short_desc = " ".join(desc.split()[:30]) + ("..." if len(desc.split()) > 30 else "")
-#         expanded = st.session_state["expanded_subs"].get(unique_id, False)
-#
-#         with st.container():
-#             st.markdown("---")
-#             cols = st.columns([1, 6])
-#
-#             with cols[0]:
-#                 if logo:
-#                     st.image(logo, width=50)
-#                 else:
-#                     st.markdown("🧩")
-#
-#             with cols[1]:
-#                 st.markdown(f"**{name}**  \n🌍 **{country}**  |  🏢 **{sector}**  |  👥 **{linkedin_members} members**")
-#                 if url:
-#                     st.markdown(f"[🌐 Visit Website]({url})")
-#
-#                 if expanded:
-#                     st.markdown(desc)
-#                     if st.button("Show less", key=f"less_{unique_id}"):
-#                         st.session_state["expanded_subs"][unique_id] = False
-#                         st.rerun()
-#                 else:
-#                     st.markdown(short_desc)
-#                     if st.button("Expand description", key=f"more_{unique_id}"):
-#                         st.session_state["expanded_subs"][unique_id] = True
-#                         st.rerun()
+def show_subsidiaries(subsidiaries, context_label="main"):
+    """
+    Displays subsidiaries in a clean, readable layout.
+    ✅ Shows full description (no expand button)
+    ✅ Logos fit neatly in divs
+    """
+    if not subsidiaries:
+        st.info("No subsidiaries found.")
+        return
+
+    st.markdown("### 🏢 Subsidiaries Overview")
+
+    for i, sub in enumerate(subsidiaries):
+        name = sub.get("name", "Unknown")
+        logo = sub.get("logo", "")
+        desc = sub.get("description", "No description available.")
+        sector = sub.get("sector", "N/A")
+        country = sub.get("country", "N/A")
+        linkedin_members = sub.get("linkedin_members", 0)
+        url = sub.get("url", "")
+
+        with st.container():
+            st.markdown("---")
+            cols = st.columns([1, 6])
+
+            with cols[0]:
+                st.markdown(
+                    f"""
+                    <div style="
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        width: 80px;
+                        height: 80px;
+                        border-radius: 12px;
+                        overflow: hidden;
+                        background-color: #f5f5f5;
+                        box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+                    ">
+                        <img src="{logo}" style="max-width: 70px; max-height: 70px; object-fit: contain;" />
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            with cols[1]:
+                st.markdown(f"### {name}")
+                st.markdown(f"**Sector:** {sector}  |  **Country:** {country}  |  👥 {linkedin_members} members")
+                if url:
+                    st.markdown(f"[🌐 Visit Website]({url})")
+
+                # ✅ Full description always visible
+                st.markdown(f"<p style='text-align: justify;'>{desc}</p>", unsafe_allow_html=True)
 
 # ============================================================
 # 🔹 Search Input
@@ -347,8 +345,8 @@ if st.button("🚀 Analyze Company"):
             mgmt_list, mgmt_text = get_top_management(search_query, text=wiki_text)
             progress.progress(85)
 
-            # status.text("🏢 Fetching subsidiaries...")
-            # subsidiaries = get_subsidiaries(search_query) or generate_subsidiary_data(search_query)
+            status.text("🏢 Fetching subsidiaries...")
+            subsidiaries = get_subsidiaries(search_query) or generate_subsidiary_data(search_query)
             progress.progress(95)
 
             # Store report and search data
@@ -371,8 +369,12 @@ if st.button("🚀 Analyze Company"):
             st.subheader("👥 Top Management")
             show_top_management(mgmt_list)
 
-            # st.subheader("🏢 Subsidiaries")
-            # show_subsidiaries(subsidiaries)
+            st.subheader("🏢 Subsidiaries")
+            if subsidiaries:
+                show_subsidiaries(subsidiaries)
+            else:
+                st.info("No subsidiaries found for this company.")
+
 
             events_text = f"\n\nCorporate Events:\n{json.dumps(corporate_events)}" if corporate_events else ""
             mgmt_text_pdf = f"\n\nTop Management:\n{mgmt_text}" if mgmt_text else ""
@@ -424,6 +426,14 @@ if reports:
                 title=r.get('company', 'Report'),
                 summary=f"{r.get('description', '')}\n\n{r.get('summary', '')}"
             )
+
+            st.subheader("🏢 Subsidiaries")
+            subsidiaries_data = get_subsidiaries(r.get("company", ""))
+            if subsidiaries_data:
+                show_subsidiaries(subsidiaries_data, context_label=f"report_{idx}")
+            else:
+                st.info("No subsidiaries found for this company.")
+
 
             st.download_button(
                 "📄 Download PDF",
@@ -486,8 +496,8 @@ if history:
             mgmt_list = normalize_top_management(h.get("top_management"))
             show_top_management(mgmt_list)
 
-            # st.subheader("🏢 Subsidiaries")
-            # show_subsidiaries(get_subsidiaries(query))
+            st.subheader("🏢 Subsidiaries")
+            show_subsidiaries(get_subsidiaries(query))
 
             pdf_file = create_pdf_from_text(
                 title=query,

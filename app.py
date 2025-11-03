@@ -12,6 +12,9 @@ from serpapi import GoogleSearch
 import hashlib
 import ast
 import uuid
+import streamlit as st
+import pandas as pd
+from analysis.person_analyzer import generate_people_intelligence
 
 from searxng_analyzer import (
     generate_summary,
@@ -368,6 +371,19 @@ if st.button("🚀 Analyze Company"):
 
             st.subheader("👥 Top Management")
             show_top_management(mgmt_list)
+
+            # === ADD THIS BLOCK ===
+            st.subheader("People Intelligence")
+            people = generate_people_intelligence(search_query, mgmt_list)
+            if people:
+                df = pd.DataFrame(people)
+                df = df[['name', 'position', 'status', 'location', 'linkedin', 'bio']]
+                df.columns = ['Name', 'Role', 'Status', 'Location', 'LinkedIn', 'Bio']
+                df['LinkedIn'] = df['LinkedIn'].apply(lambda x: f"[View]({x})" if x != "N/A" else "N/A")
+                st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
+            else:
+                st.info("No people intelligence generated.")
+            
 
             st.subheader("🏢 Subsidiaries")
             if subsidiaries:

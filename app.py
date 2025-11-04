@@ -16,14 +16,15 @@ import streamlit as st
 import pandas as pd
 from analysis.person_analyzer import generate_people_intelligence
 
+from analysis.summary_generator import generate_summary
 from searxng_analyzer import (
-    generate_summary,
     generate_description,
     get_wikipedia_summary,
     generate_corporate_events,
     get_top_management,
     generate_subsidiary_data
 )
+
 from searxng_db import (
     store_report,
     get_reports,

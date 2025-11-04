@@ -124,7 +124,7 @@ def get_search_history():
 def store_subsidiaries(company, subsidiaries):
     """
     Always insert new subsidiary rows.
-    Allows duplicates (useful for comparison and historical tracking).
+    Supports additional metadata fields.
     """
     if not subsidiaries or not isinstance(subsidiaries, list):
         return
@@ -139,16 +139,18 @@ def store_subsidiaries(company, subsidiaries):
             "sector": clean_text(sub.get("sector", "")),
             "linkedin_members": sub.get("linkedin_members") or 0,
             "country": clean_text(sub.get("country", "")),
+            "website": clean_text(sub.get("website", "")),
+            "founded_year": sub.get("founded_year"),
+            "revenue": sub.get("revenue"),
+            "employees": sub.get("employees"),
+            "headquarters": clean_text(sub.get("headquarters", "")),
         })
 
     try:
         response = supabase.table("company_subsidiaries").insert(data).execute()
         if response.data:
-            print(f"✅ Inserted {len(data)} subsidiaries for {company} (duplicates allowed)")
+            print(f"✅ Inserted {len(data)} subsidiaries for {company}")
             return response.data
-        else:
-            print(f"⚠️ No response inserting subsidiaries for {company}")
-            return False
     except Exception as e:
         print(f"⚠️ Failed to store subsidiaries for {company}: {e}")
         return False
@@ -168,3 +170,40 @@ def get_subsidiaries(company):
     except Exception as e:
         print(f"⚠️ Error fetching subsidiaries for {company}: {e}")
         return []
+
+# ============================================================
+# 🔹 Person Profiles Management
+# ============================================================
+def store_person_profiles(company, persons):
+    """
+    Store executives & leadership with new fields.
+    """
+    if not persons or not isinstance(persons, list):
+        return
+
+    data = []
+    for p in persons:
+        data.append({
+            "company": clean_text(company),
+            "name": clean_text(p.get("name", "")),
+            "role": clean_text(p.get("role", "")),
+            "status": clean_text(p.get("status", "Current")),
+            "location": clean_text(p.get("location", "")),
+            "linkedin": clean_text(p.get("linkedin", "")),
+            "bio": clean_text(p.get("bio", "")),
+            "events": clean_text(p.get("events", "")),
+            "email": clean_text(p.get("email", "")),
+            "phone": clean_text(p.get("phone", "")),
+            "twitter": clean_text(p.get("twitter", "")),
+            "picture": clean_text(p.get("picture", "")),
+            "source": clean_text(p.get("source", "")),
+        })
+
+    try:
+        response = supabase.table("person_profiles").insert(data).execute()
+        if response.data:
+            print(f"✅ Inserted {len(data)} profiles for {company}")
+            return response.data
+    except Exception as e:
+        print(f"⚠️ Failed to store person profiles for {company}: {e}")
+        return False

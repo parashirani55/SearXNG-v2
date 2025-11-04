@@ -354,7 +354,14 @@ if st.button("🚀 Analyze Company"):
             progress.progress(95)
 
             # Store report and search data
-            store_report(search_query, summary, description, json.dumps(corporate_events), json.dumps(mgmt_list))
+            store_report(
+            search_query,
+            summary,
+            description,
+            json.dumps(normalize_corporate_events(corporate_events)),
+            json.dumps(mgmt_list)
+            )
+
             store_search(search_query, wiki_text, summary, description, json.dumps(corporate_events), json.dumps(mgmt_list))
 
             st.success("✅ Company data successfully fetched!")
@@ -480,34 +487,29 @@ if history:
             st.markdown(f"**AI Summary:**\n{h.get('summary', '')}")
 
             st.subheader("📅 Corporate Events")
-            corp_data_raw = r.get("corporate_events")
+            corp_data_raw = h.get("corporate_events")
 
-              # ✅ Add this import once at the top of app.py (if not already)
 
             # ✅ Ensure corporate events are always parsed into a list of dicts
             corp_data = []
             if corp_data_raw:
-                if isinstance(corp_data_raw, str):
+                # Case: JSON string (including nested)
+                try:
+                    corp_data = json.loads(corp_data_raw)
+                    if isinstance(corp_data, str):
+                        corp_data = json.loads(corp_data)
+                except:
+                    # Case: Python literal (list/dict stored as text)
                     try:
-                        corp_data = json.loads(corp_data_raw)
-                        if isinstance(corp_data, str):
-                            corp_data = json.loads(corp_data)
-                    except Exception:
-                        try:
-                            corp_data = ast.literal_eval(corp_data_raw)
-                        except Exception:
-                            corp_data = normalize_corporate_events(corp_data_raw)
-                elif isinstance(corp_data_raw, list):
-                    corp_data = corp_data_raw
-
-            # ✅ Normalize format (convert text → dict if needed)
-            corp_data = normalize_corporate_events(corp_data)
-
-            # ✅ Display like live analysis (table form)
+                        corp_data = ast.literal_eval(corp_data_raw)
+                    except:
+                        # Case: raw plain text → convert to structured data
+                        corp_data = normalize_corporate_events(corp_data_raw)
+            
+            if not isinstance(corp_data, list):
+                corp_data = []
+            
             show_corporate_events(corp_data)
-
-
-
 
             st.subheader("👥 Top Management")
             mgmt_list = normalize_top_management(h.get("top_management"))

@@ -1,21 +1,20 @@
-# analysis/corporate_event/event_utils.py
-
 from datetime import datetime
 import re
 from typing import List, Dict, Any
 
 # ============================================================
-# Text Cleaning — NOW LIST-SAFE
+# Text Cleaning — Safe for Lists, Strings, None
 # ============================================================
 def clean_text(text) -> str:
-    """Safely clean: str, list, None → str"""
+    """Safely clean text: accepts str, list, or None → returns str"""
     if isinstance(text, list):
         text = " ".join(str(i).strip() for i in text if i)
     if not isinstance(text, str):
         text = str(text or "")
-    text = re.sub(r"<[^>]+>", "", text)      # strip HTML
-    text = re.sub(r"\s+", " ", text).strip() # collapse spaces
+    text = re.sub(r"<[^>]+>", "", text)  # strip HTML
+    text = re.sub(r"\s+", " ", text).strip()  # collapse spaces
     return text
+
 
 # ============================================================
 # Date Normalization
@@ -39,6 +38,7 @@ def normalize_date(date_str: str) -> str:
     except Exception:
         return "Unknown"
 
+
 # ============================================================
 # Deduplication
 # ============================================================
@@ -56,8 +56,9 @@ def deduplicate_events(events: List[Dict]) -> List[Dict]:
             unique.append(e)
     return unique
 
+
 # ============================================================
-# Merge & Clean — FULLY SAFE
+# Merge & Clean — Fully Safe
 # ============================================================
 def merge_and_clean_events(events: List[Dict]) -> List[Dict]:
     if not events or not isinstance(events, list):
@@ -74,8 +75,8 @@ def merge_and_clean_events(events: List[Dict]) -> List[Dict]:
             "title": title,
             "description": clean_text(evt.get("description") or title),
             "event_type": clean_text(evt.get("event_type") or evt.get("type") or "Other"),
-            "counterparty": clean_text(evt.get("counterparty") or evt.get("other_party") or "Not available"),
-            "amount": clean_text(evt.get("amount") or evt.get("investment") or evt.get("value") or "Not available"),
+            "counterparty": clean_text(evt.get("counterparty") or evt.get("other_party") or evt.get("counter_party") or ""),
+            "amount": clean_text(evt.get("amount") or evt.get("investment") or evt.get("value") or "Undisclosed"),
             "enterprise_value": clean_text(evt.get("enterprise_value") or "Not available"),
             "advisors": clean_text(evt.get("advisors") or "N/A"),
             "source": clean_text(evt.get("source") or "Unknown"),
@@ -86,8 +87,9 @@ def merge_and_clean_events(events: List[Dict]) -> List[Dict]:
     cleaned = deduplicate_events(cleaned)
     return sort_events(cleaned)
 
+
 # ============================================================
-# Sorting
+# Sorting by completeness & recency
 # ============================================================
 def sort_events(events: List[Dict]) -> List[Dict]:
     def completeness_score(e):
@@ -104,17 +106,14 @@ def sort_events(events: List[Dict]) -> List[Dict]:
         except Exception:
             e["_sort_date"] = datetime.min
 
-    sorted_events = sorted(
-        events,
-        key=lambda e: (completeness_score(e), e["_sort_date"]),
-        reverse=True
-    )
+    sorted_events = sorted(events, key=lambda e: (completeness_score(e), e["_sort_date"]), reverse=True)
     for e in sorted_events:
         e.pop("_sort_date", None)
     return sorted_events
 
+
 # ============================================================
-# Confidence
+# Confidence Assignment
 # ============================================================
 def validate_event_confidence(events: List[Dict]) -> List[Dict]:
     for e in events:

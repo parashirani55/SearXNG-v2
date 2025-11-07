@@ -12,15 +12,19 @@ click==8.3.0
 cryptography==46.0.2
 deprecation==2.1.0
 distro==1.9.0
+feedparser==6.0.11
+finnhub-python
+fpdf2==2.7.9
 gitdb==4.0.12
 GitPython==3.1.45
 google-search-results==2.4.2
+google-generativeai==0.5.2
+google-ai-generativelanguage==0.6.2
 h11==0.16.0
 h2==4.3.0
 hpack==4.1.0
 httpcore==1.0.9
 httpx==0.28.1
-fpdf2>=2.7.4
 hyperframe==6.1.0
 idna==3.10
 Jinja2==3.1.6
@@ -34,8 +38,10 @@ openai==2.2.0
 packaging==25.0
 pandas==2.3.3
 pillow==11.3.0
+playwright==1.42.0
 postgrest==2.21.1
-protobuf==6.32.1
+# ✅ FIX: Compatible protobuf version
+protobuf>=3.20.3,<5.0.0
 pyarrow==21.0.0
 pycparser==2.23
 pydantic==2.12.0
@@ -48,6 +54,7 @@ pytz==2025.2
 realtime==2.21.1
 referencing==0.36.2
 requests==2.32.5
+rich>=10.14.0
 rpds-py==0.27.1
 six==1.17.0
 smmap==5.0.2
@@ -68,12 +75,3 @@ typing_extensions==4.15.0
 tzdata==2025.2
 urllib3==2.5.0
 websockets==15.0.1
-playwright==1.42.0
-fpdf2==2.7.9
-feedparser==6.0.11
-beautifulsoup4==4.14.2
-finnhub-python
-google-generativeai>=0.5.2
-
-
-

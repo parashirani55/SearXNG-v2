@@ -1,6 +1,16 @@
+# ============================================================
+# 🔹 summary_generator.py
+# Purpose: Generate company summaries and descriptions
+# Works with OpenRouter + Wikipedia fallback
+# ============================================================
+
 from .api_client import openrouter_chat
 from .wiki_utils import get_wikipedia_summary
 
+
+# ============================================================
+# 🔹 Generate Summary (Basic Company Info Extraction)
+# ============================================================
 def generate_summary(company_name: str, text: str = "") -> str:
     # ✅ 1️⃣ First try text from pipeline (best)
     source = "input"
@@ -58,3 +68,47 @@ Strict format:
         result = openrouter_chat("openai/gpt-4o", prompt, "Summary Extractor Pro")
 
     return result.strip() if result else "No summary generated."
+
+
+# ============================================================
+# 🔹 Generate Description (Narrative Company Overview)
+# ============================================================
+def generate_description(company_name: str, text: str = "") -> str:
+    """
+    Create a readable and factual paragraph describing the company.
+    - Uses Wikipedia or fallback text if available.
+    - Returns an investor-style narrative suitable for company reports.
+    """
+    # ✅ Use Wikipedia if no text provided
+    if not text:
+        text = get_wikipedia_summary(company_name) or ""
+
+    prompt = f"""
+You are a senior equity research analyst.
+
+Write a factual, clear, and concise **company description** for "{company_name}".
+It should read like the introductory paragraph of an investor report or Wikipedia page.
+
+Include:
+- What the company does (products/services)
+- Its main industry and regions of operation
+- Its scale, significance, or leadership position
+- Mention subsidiaries or divisions if applicable
+
+Input context (if any):
+{text[:6000]}
+
+Rules:
+- Do not make up data without marking "(estimated)".
+- Avoid marketing tone or exaggeration.
+- Output plain text (1–2 paragraphs, 5–7 sentences).
+"""
+
+    # ✅ Try fast model first
+    result = openrouter_chat("openai/gpt-4o-mini", prompt, "Company Description Generator")
+
+    # ✅ Fallback to pro model if too generic
+    if not result or len(result.split()) < 30:
+        result = openrouter_chat("openai/gpt-4o", prompt, "Company Description Generator Pro")
+
+    return result.strip() if result else f"Description unavailable for {company_name}."

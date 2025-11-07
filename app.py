@@ -121,33 +121,95 @@ st.markdown("#### Discover insights, analyze companies, and generate instant val
 # 🔹 Helper Functions
 # ============================================================
 
-def show_corporate_events(corporate_events):
-    """Render corporate events as a clean table."""
-    if isinstance(corporate_events, str):
-        corporate_events = normalize_corporate_events(corporate_events)
+def show_corporate_events(events):
+    """
+    ✅ Unified Corporate Events Renderer
+       - Handles JSON string / list-of-dicts / raw text
+       - Fixes inconsistent key names
+       - Safe date parsing with mixed formats
+       - Splits clean vs incomplete events cleanly
+    """
 
-    if isinstance(corporate_events, list) and corporate_events:
-        df = pd.DataFrame(corporate_events)
-        if "date" in df.columns:
-            df["sort_date"] = pd.to_datetime(df["date"], errors="coerce")
-            df = df.sort_values("sort_date", ascending=False).drop("sort_date", axis=1)
-        
-        rename_map = {
-            "date": "Date",
-            "description": "Event Description",
-            "type": "Type",
-            "value": "Value"
-        }
-        df = df.rename(columns=rename_map)
-        df = df.fillna("-")
-        
-        cols = [c for c in ["Date", "Event Description", "Type", "Value"] if c in df.columns]
-        if cols:
-            st.dataframe(df[cols], width="stretch", hide_index=True)
-        else:
-            st.info("No valid corporate events data available.")
-    else:
-        st.warning("⚠️ No corporate events found or data is empty. Check DB entry for 'corporate_events' field.")
+    if not events:
+        st.warning("⚠️ No corporate events found.")
+        return
+
+    # ✅ Convert JSON → list of dicts
+    if isinstance(events, str):
+        try:
+            events = json.loads(events)
+            if isinstance(events, str):  # double-encoded JSON
+                events = json.loads(events)
+        except:
+            events = normalize_corporate_events(events)
+
+    if not isinstance(events, list) or not events:
+        st.warning("⚠️ Corporate events format invalid.")
+        return
+
+    df = pd.DataFrame(events)
+
+    # ✅ Standardize naming
+    rename_map = {
+        "description": "Event Description",
+        "title": "Event Description",
+        "date": "Date",
+        "event_type": "Type",
+        "type": "Type",
+        "counterparty": "Counterparty",
+        "amount": "Value",
+        "value": "Value",
+        "source": "Source"
+    }
+    df = df.rename(columns=rename_map)
+
+    # ✅ Ensure mandatory columns exist
+    required_cols = ["Date", "Event Description", "Type", "Counterparty", "Value", "Source"]
+    for col in required_cols:
+        if col not in df.columns:
+            df[col] = "-"
+    
+    # ✅ Remove duplicate column labels (fixes "cannot reindex" error)
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    
+    # ✅ Normalize cell content (safe for Series, arrays, NaN, etc.)
+    for col in required_cols:
+        df[col] = df[col].apply(
+            lambda x: (
+                " ".join(map(str, x)) if isinstance(x, (list, tuple)) else
+                str(x).strip() if isinstance(x, (str, int, float)) and str(x).strip().lower() not in ["", "nan", "none"] else
+                "-"
+            )
+        )
+    
+    # ✅ Replace any remaining NaN values
+    df = df.fillna("-")
+    
+    # ✅ Clean + parse dates (mixed formats allowed)
+    df["Date"] = df["Date"].astype(str).str.replace(r"[^\w\s:/-]", "", regex=True).str.strip()
+    df["SortDate"] = pd.to_datetime(df["Date"], format="mixed", errors="coerce")
+    df = df.sort_values("SortDate", ascending=False)
+
+    # ✅ Reorder columns
+    df = df[required_cols]
+
+    # ✅ Split complete vs incomplete
+    complete_mask = (
+        df["Event Description"].ne("-") &
+        df["Date"].ne("-") &
+        df["Type"].ne("-")
+    )
+    complete_df = df[complete_mask]
+    incomplete_df = df[~complete_mask]
+
+    # ✅ Display
+    if not complete_df.empty:
+        st.markdown("### ✅ High-Quality Corporate Events")
+        st.dataframe(complete_df.reset_index(drop=True), width="stretch")
+
+    if not incomplete_df.empty:
+        st.markdown("### ⚠️ Incomplete Corporate Events (Low Confidence)")
+        st.dataframe(incomplete_df.reset_index(drop=True), width="stretch")
 
 def show_top_management(mgmt_data):
     """
@@ -320,6 +382,9 @@ if search_query.strip():
 # ============================================================
 # 🔹 Analyze Company
 # ============================================================
+# ============================================================
+# 🔹 Analyze Company
+# ============================================================
 if st.button("🚀 Analyze Company"):
     if not search_query.strip():
         st.warning("⚠️ Please enter a company name or URL")
@@ -328,42 +393,90 @@ if st.button("🚀 Analyze Company"):
         status = st.empty()
 
         summary, description, corporate_events, mgmt_list, mgmt_text, subsidiaries = "", "", [], [], "", []
+
         try:
+            # -------------------------
+            # 1️⃣ Wikipedia / Company Background
+            # -------------------------
             status.text("📘 Reading company background...")
             wiki_text = get_wikipedia_summary(search_query)
             progress.progress(20)
 
+            # -------------------------
+            # 2️⃣ AI Summary
+            # -------------------------
             status.text("🧠 Extracting company structure...")
             summary = generate_summary(search_query, text=wiki_text)
             progress.progress(40)
 
+            # -------------------------
+            # 3️⃣ Company Description
+            # -------------------------
             status.text("📝 Writing company profile...")
             description = generate_description(search_query, text=wiki_text, company_details=summary)
             progress.progress(60)
 
+            # -------------------------
+            # 4️⃣ Corporate Events
+            # -------------------------
+            # -------------------------
+            # 4️⃣ Corporate Events
+            # -------------------------
             status.text("📅 Fetching corporate events...")
-            corporate_events = generate_corporate_events(search_query, text=wiki_text)
+            try:
+                # ✅ Gemini-based fetcher now returns a dict (no JSON to parse)
+                raw_events_dict = generate_corporate_events(search_query)
+                corporate_events = raw_events_dict.get("events", [])
+            
+                # ✅ Ensure data is always a list of dicts
+                if not isinstance(corporate_events, list):
+                    corporate_events = []
+            
+            except Exception as e:
+                corporate_events = []
+                st.warning(f"⚠️ Failed to fetch corporate events: {e}")
+            
             progress.progress(75)
+            
 
+            # -------------------------
+            # 5️⃣ Top Management
+            # -------------------------
             status.text("👥 Fetching top management...")
-            mgmt_list, mgmt_text = get_top_management(search_query, text=wiki_text)
+            mgmt_list, mgmt_text = get_top_management(search_query)
+            mgmt_list = normalize_top_management(mgmt_list)
             progress.progress(85)
 
+            # -------------------------
+            # 6️⃣ Subsidiaries
+            # -------------------------
             status.text("🏢 Fetching subsidiaries...")
             subsidiaries = get_subsidiaries(search_query) or generate_subsidiary_data(search_query)
             progress.progress(95)
 
-            # Store report and search data
+            # -------------------------
+            # 7️⃣ Store Report & Search Data
+            # -------------------------
             store_report(
-            search_query,
-            summary,
-            description,
-            json.dumps(normalize_corporate_events(corporate_events)),
-            json.dumps(mgmt_list)
+                search_query,
+                summary,
+                description,
+                json.dumps(corporate_events),
+                json.dumps(mgmt_list)
             )
 
-            store_search(search_query, wiki_text, summary, description, json.dumps(corporate_events), json.dumps(mgmt_list))
+            store_search(
+                search_query,
+                wiki_text,
+                summary,
+                description,
+                json.dumps(corporate_events),
+                json.dumps(mgmt_list)
+            )
 
+            # -------------------------
+            # 8️⃣ Display Results
+            # -------------------------
             st.success("✅ Company data successfully fetched!")
             progress.progress(100)
             status.text("✅ Done")
@@ -377,10 +490,13 @@ if st.button("🚀 Analyze Company"):
             st.subheader("📅 Corporate Events")
             show_corporate_events(corporate_events)
 
+            if raw_events_dict and raw_events_dict.get("verified_count", 0) > 0:
+                st.info(f"✅ Verified {raw_events_dict['verified_count']} corporate events retrieved via Gemini Deep Fetch.")
+
+
             st.subheader("👥 Top Management")
             show_top_management(mgmt_list)
 
-            # === ADD THIS BLOCK ===
             st.subheader("People Intelligence")
             people = generate_people_intelligence(search_query, mgmt_list)
             if people:
@@ -391,7 +507,6 @@ if st.button("🚀 Analyze Company"):
                 st.markdown(df.to_html(escape=False, index=False), unsafe_allow_html=True)
             else:
                 st.info("No people intelligence generated.")
-            
 
             st.subheader("🏢 Subsidiaries")
             if subsidiaries:
@@ -399,12 +514,22 @@ if st.button("🚀 Analyze Company"):
             else:
                 st.info("No subsidiaries found for this company.")
 
-
+            # -------------------------
+            # 9️⃣ PDF Generation
+            # -------------------------
             events_text = f"\n\nCorporate Events:\n{json.dumps(corporate_events)}" if corporate_events else ""
             mgmt_text_pdf = f"\n\nTop Management:\n{mgmt_text}" if mgmt_text else ""
-            pdf_file = create_pdf_from_text(title=search_query, summary=f"{description}\n\n{summary}{events_text}{mgmt_text_pdf}")
+            pdf_file = create_pdf_from_text(
+                title=search_query,
+                summary=f"{description}\n\n{summary}{events_text}{mgmt_text_pdf}"
+            )
 
-            st.download_button("📄 Download PDF", data=pdf_file, file_name=f"{search_query.replace(' ', '_')}.pdf", mime="application/pdf")
+            st.download_button(
+                "📄 Download PDF",
+                data=pdf_file,
+                file_name=f"{search_query.replace(' ', '_')}.pdf",
+                mime="application/pdf"
+            )
 
         except Exception as e:
             status.text("")

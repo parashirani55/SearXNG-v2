@@ -1,0 +1,38 @@
+[
+  {
+    "title": "Microsoft reports strong fiscal first-quarter earnings",
+    "description": "Microsoft reports strong fiscal first-quarter earnings",
+    "type": "Acquisition",
+    "date": "2023-01-01",
+    "source": "Yahoo",
+    "link": "",
+    "value": ""
+  },
+  {
+    "title": "Warren Buffett increases investment in a high-yielding stock",
+    "description": "Warren Buffett increases investment in a high-yielding stock",
+    "type": "Investment",
+    "date": "2022-01-25",
+    "source": "Yahoo",
+    "link": "",
+    "value": ""
+  },
+  {
+    "title": "Berkshire Hathaway may have reduced its stake in Apple Inc.",
+    "description": "Berkshire Hathaway may have reduced its stake in Apple Inc.",
+    "type": "Divestment",
+    "date": "2021-10-31",
+    "source": "CNBC",
+    "link": "",
+    "value": ""
+  },
+  {
+    "title": "Nvidia CEO Jensen Huang donates to fund the construction of U.S. President Donald Trump\u2019s White House ballroom",
+    "description": "Nvidia CEO Jensen Huang donates to fund the construction of U.S. President Donald Trump\u2019s White House ballroom",
+    "type": "Donation",
+    "date": "2021-05-05",
+    "source": "Yahoo",
+    "link": "",
+    "value": ""
+  }
+]

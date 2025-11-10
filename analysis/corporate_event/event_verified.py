@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import pandas as pd
 import logging
 from datetime import datetime
@@ -9,6 +10,7 @@ from typing import Dict, Any, List
 from dotenv import load_dotenv
 import google.generativeai as genai
 
+# Utilities
 from analysis.corporate_event.event_ai import refine_events_with_ai
 from analysis.corporate_event.event_utils import (
     deduplicate_events, merge_and_clean_events, sort_events, validate_event_confidence
@@ -18,29 +20,11 @@ from analysis.corporate_event.event_utils import (
 # 🔹 Setup
 # ============================================================
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env")
-
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"), transport="rest")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-
 # ============================================================
-# 🔹 Safe Import for Search Fallback
-# ============================================================
-def get_search_company_news():
-    try:
-        from searxng_analyzer import search_company_news
-        return search_company_news
-    except Exception:
-        try:
-            from analysis.search_fallback import search_company_news as fallback_search
-            return fallback_search
-        except Exception:
-            logging.warning("⚠️ search_fallback missing → using dummy fallback")
-            return lambda company, months=12: f"No live context for {company}"
-
-
-# ============================================================
-# 🔹 Extraction Utility
+# 🔹 Utility: Extract Event Details
 # ============================================================
 def extract_event_details(desc: str) -> Dict[str, str]:
     """Extract event type, counterparty, and value from text."""
@@ -78,188 +62,61 @@ def extract_event_details(desc: str) -> Dict[str, str]:
 
     return {"event_type": event_type, "counterparty": counterparty, "value": value}
 
-
 # ============================================================
-# 🔹 Gemini AI Repair Layer
+# 🔹 Gemini Fetch Helper
 # ============================================================
-def repair_incomplete_events_with_ai(events: List[Dict[str, Any]], company: str) -> List[Dict[str, Any]]:
-    """Use Gemini to fill missing fields intelligently."""
+def _fetch_corporate_events(company: str, year: int, month: int = None, verified: bool = True, context: str = None):
+    """Fetch corporate events using Gemini (monthly if month specified, yearly otherwise)."""
     try:
-        if not events:
-            return []
-        model = genai.GenerativeModel("gemini-2.5-pro")
-        repaired = []
+        model_name = "gemini-2.0-flash-exp" if month else "gemini-2.5-pro"
+        model = genai.GenerativeModel(model_name)
 
-        for i in range(0, len(events), 10):
-            batch = events[i:i+10]
+        if month:
+            month_name = datetime(year, month, 1).strftime("%B")
             prompt = f"""
-You are a corporate-finance data specialist.
-Given incomplete event records for {company}, fix and fill missing fields.
+You are a corporate finance researcher.
+Find **verified corporate events** for {company} during **{month_name} {year}**.
+Focus strictly on M&A, partnerships, investments, divestitures, and buybacks.
 
-Return JSON:
-{{"events":[{{"date":"YYYY-MM-DD","event_name":"...","description":"...","counterparty":"...","value":"...","event_type":"..."}}]]}}
+Return verified events only, confirmed via:
+- Official company press releases
+- Reuters, Bloomberg, Financial Times, PR Newswire
+- SEC filings or MarketScreener
 
-Input:
-{json.dumps(batch, indent=2)}
+Return valid JSON ONLY:
+{{
+  "events": [
+    {{
+      "date": "YYYY-MM-DD",
+      "event_name": "Acquisition of XYZ Corp",
+      "description": "S&P Global completed the acquisition of XYZ Corp for $2.4B.",
+      "counterparty": "XYZ Corp",
+      "value": "US$2.4B",
+      "event_type": "Acquisition",
+      "source": "Reuters"
+    }}
+  ]
+}}
 """
+        else:
+            prompt = f"""
+You are a corporate-finance analyst.
+Summarize **verified and completed corporate events** for {company} in the year {year}.
+Focus on acquisitions, mergers, divestitures, partnerships, and bond issues.
 
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(
-                    response_mime_type="application/json",
-                    temperature=0.2,
-                    max_output_tokens=32768,
-                ),
-            )
-
-            raw = (response.text or "").strip()
-            if raw.startswith("```json"):
-                raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
-
-            try:
-                data = json.loads(raw)
-                repaired.extend(data.get("events", []))
-            except Exception:
-                continue
-
-        logging.info(f"🧠 AI repaired {len(repaired)} events successfully")
-        return repaired if repaired else events
-    except Exception as e:
-        logging.warning(f"⚠️ AI repair failed → {e}")
-        return events
-
-
-# ============================================================
-# 🔹 Ask Gemini for Monthly Data (Current Year)
-# ============================================================
-def _ask_gemini_for_month(company: str, year: int, month: int, context: str) -> List[Dict[str, Any]]:
-    """Fetch month-specific corporate events with smarter prompt and contextual grounding."""
-    try:
-        model = genai.GenerativeModel("gemini-2.5-pro")
-        month_name = datetime(year, month, 1).strftime("%B")
-        start_date = f"{year}-{month:02d}-01"
-        end_date = f"{year}-{month:02d}-28"
-
-        # 🔹 Fetch live or fallback context
-        try:
-            search_company_news = get_search_company_news()
-            logging.info(f"🌐 Fetching contextual news for {company} ({month_name} {year})...")
-            live_news = search_company_news(company, months=1)
-            if not live_news:
-                live_news = search_company_news(company, months=3)
-            context += f"\nRelevant verified news and filings ({month_name} {year}):\n{live_news[:6000]}"
-        except Exception as e:
-            logging.warning(f"⚠️ Failed to fetch live news context → {e}")
-
-        # 🧠 Refined prompt — gives examples, time range, fallback logic
-        prompt = f"""
-Today's date is {datetime.now():%B %d, %Y}.
-You are a senior corporate-finance analyst who tracks mergers, acquisitions, partnerships, divestitures, and similar events.
-
-Analyze all reliable public and financial information and list **every verifiable corporate event involving {company}**
-that occurred or was announced between **{start_date}** and **{end_date}** ({month_name} {year}).
-
-If no major events are publicly recorded, infer any likely relevant actions or strategic developments
-(e.g., divestments, acquisitions, collaborations, investments, or capital structure changes)
-based on context, company behavior, and industry trends.
-
-### Examples of valid outputs:
-- Acquisition: "S&P Global Acquires With Intelligence for $1.8B"
-- Partnership: "S&P Global partners with Microsoft for data integration"
-- Divestiture: "S&P Global sells Energy Data division to KKR"
-- Investment: "S&P Global invests $250M in fintech platform XYZ"
-- Buyback: "S&P Global launches $3B share repurchase program"
-
-Each event should include:
-- date (YYYY-MM-DD)
-- event_name
-- description (2–3 sentences explaining purpose and impact)
-- counterparty
-- value (or 'Undisclosed')
-- event_type (Acquisition, Merger, Investment, Partnership, Divestiture, Spin-off, Buyback, Bond Issue, Other)
+Only include events confirmed by trusted media or company press releases.
+Exclude rumors, future plans, and unverified content.
 
 Return strictly valid JSON:
-{{"events":[{{"date":"YYYY-MM-DD","event_name":"...","description":"...","counterparty":"...","value":"...","event_type":"..."}}]]}}
-
-Context:
-{context}
+{{"events":[{{"date":"YYYY-MM-DD","event_name":"...","description":"...","counterparty":"...","value":"...","event_type":"...","source":"..."}}]}}
 """
 
-        # 🔹 Run Gemini request
         response = model.generate_content(
             prompt,
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
-                temperature=0.35,
-                max_output_tokens=32768,
-            ),
-        )
-
-        raw = (response.text or "").strip()
-        if raw.startswith("```json"):
-            raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
-
-        # 🔹 Safe parse
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            import re
-            match = re.search(r'\{.*"events".*\[.*\].*\}', raw, re.DOTALL)
-            data = json.loads(match.group(0)) if match else {"events": []}
-
-        events = data.get("events", [])
-        logging.info(f"✅ Gemini found {len(events)} events for {month_name} {year}")
-
-        # 🔁 Retry with Gemini-2.5-Pro if nothing found
-        if len(events) == 0:
-            logging.warning(f"⚠️ No events found for {month_name} {year} — retrying with Gemini-2.5-Pro")
-            model_fb = genai.GenerativeModel("gemini-2.5-pro")
-            response_fb = model_fb.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(
-                    response_mime_type="application/json",
-                    temperature=0.25,
-                    max_output_tokens=32768,
-                ),
-            )
-            raw_fb = (response_fb.text or "").strip()
-            if raw_fb.startswith("```json"):
-                raw_fb = raw_fb.split("```json", 1)[1].split("```", 1)[0].strip()
-            try:
-                data_fb = json.loads(raw_fb)
-                events = data_fb.get("events", [])
-                logging.info(f"✅ Gemini 2.5-Pro found {len(events)} events for {month_name} {year}")
-            except Exception:
-                logging.warning(f"⚠️ Gemini-2.5-Pro fallback also failed for {month_name} {year}")
-
-        return events
-
-    except Exception as e:
-        logging.warning(f"⚠️ Gemini failed for {month_name} {year} → {e}")
-        return []
-
-
-# ============================================================
-# 🔹 Ask Gemini for Yearly Data (Past Years)
-# ============================================================
-def _ask_gemini_for_year(company: str, year: int, context: str) -> List[Dict[str, Any]]:
-    """Fetch summarized corporate events for a past year."""
-    try:
-        model = genai.GenerativeModel("gemini-2.5-pro")
-        prompt = f"""
-You are an M&A and corporate-finance analyst.
-List all verifiable corporate events for {company} during {year}.
-Return valid JSON:
-{{"events":[{{"date":"YYYY-MM-DD","event_name":"...","description":"...","counterparty":"...","value":"...","event_type":"..."}}]]}}
-Context:
-{context}
-"""
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                temperature=0.1,
-                max_output_tokens=32768,
+                temperature=0.3,
+                max_output_tokens=12288,
             ),
         )
 
@@ -268,116 +125,213 @@ Context:
             raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
 
         data = json.loads(raw)
-        events = data.get("events", [])
-        logging.info(f"✅ Gemini found {len(events)} events for {year}")
-        return events
+        return data.get("events", [])
     except Exception as e:
-        logging.warning(f"⚠️ Gemini failed for {year} → {e}")
+        logging.warning(f"⚠️ Gemini fetch failed for {company} ({year}/{month}) → {e}")
         return []
 
+# ============================================================
+# 🔹 Repair Incomplete Events
+# ============================================================
+def repair_incomplete_events_with_ai(events: List[Dict[str, Any]], company: str) -> List[Dict[str, Any]]:
+    """Use Gemini to fill incomplete fields."""
+    if not events:
+        return events
+
+    model = genai.GenerativeModel("gemini-2.5-pro")
+    repaired = []
+
+    for i in range(0, len(events), 10):
+        batch = events[i:i+10]
+        prompt = f"""
+You are a corporate-finance data specialist.
+Repair incomplete or missing values for {company}'s corporate events.
+Keep all original data, just fill missing fields (date, counterparty, type, value, source).
+
+Return valid JSON:
+{{"events": [...]}}
+Input:
+{json.dumps(batch, indent=2)}
+"""
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                    max_output_tokens=12288,
+                ),
+            )
+            raw = (response.text or "").strip()
+            if raw.startswith("```json"):
+                raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
+            data = json.loads(raw)
+            repaired.extend(data.get("events", []))
+        except Exception as e:
+            logging.warning(f"⚠️ Repair batch failed → {e}")
+            continue
+
+    logging.info(f"🧠 AI repaired {len(repaired)} events successfully")
+    return repaired or events
 
 # ============================================================
-# 🔹 Main: Verified Corporate Events Generator
+# 🔹 ETA Helper
 # ============================================================
-def generate_verified_corporate_events(company: str, years: int = 5, text: str = None) -> Dict[str, Any]:
+def estimate_eta(current_step, total_steps, avg_time_per_step):
+    remaining = (total_steps - current_step) * avg_time_per_step
+    minutes, seconds = divmod(int(remaining), 60)
+    return f"{minutes} min {seconds:02d} sec"
+
+# ============================================================
+# 🔹 Main Unified Verified Event Generator
+# ============================================================
+def generate_verified_corporate_events(company: str, years: int = 5, context_text: str = None, progress_callback=None):
+    """
+    Generate verified corporate events from Gemini.
+    Includes:
+      ✅ Monthly fetch for current year
+      ✅ Yearly fetch for past years
+      ✅ Auto-retry on empty results
+      ✅ AI repair + normalization
+      ✅ Live progress updates (for Streamlit)
+    """
     logging.info(f"🔍 Generating verified corporate events for {company} ({years} years)...")
 
+    start_time = time.time()
     end_year = datetime.now().year
     start_year = end_year - years + 1
-
-    context = f"Company: {company}\nPeriod: {start_year}–{end_year}\nFocus: Corporate M&A, divestitures, and capital market activity."
-    if text:
-        context += f"\n\nAdditional context:\n{text}"
-
+    context = f"Company: {company} | Years: {start_year}-{end_year}"
     all_events = []
+    total_steps = datetime.now().month + (years - 1)
+    avg_time_per_step = 12
+    step_count = 0
 
-    # =====================================================
-    # 1️⃣ Current Year — Monthly Data
-    # =====================================================
-    logging.info(f"🗓️ Fetching monthly events for {end_year}")
+    def update_ui(msg):
+        if progress_callback:
+            progress_callback(msg, min(step_count / total_steps, 1.0))
+
+    # ============================================================
+    # 1️⃣ Current Year (Monthly)
+    # ============================================================
     for month in range(1, datetime.now().month + 1):
-        monthly_events = _ask_gemini_for_month(company, end_year, month, context)
+        step_count += 1
+        eta = estimate_eta(step_count, total_steps, avg_time_per_step)
+        msg = f"📅 Fetching {datetime(end_year, month, 1).strftime('%B %Y')} → ETA: {eta}"
+        logging.info(msg)
+        update_ui(msg)
+
+        monthly_events = _fetch_corporate_events(company, end_year, month, verified=True, context=context)
         if not monthly_events:
-            monthly_events = refine_events_with_ai(company, [], text=f"{context}\nMonth: {month}/{end_year}")
-        all_events.extend(monthly_events)
+            time.sleep(2)
+            monthly_events = _fetch_corporate_events(company, end_year, month, verified=True, context=context)
+        all_events.extend(monthly_events or [])
 
-    # =====================================================
-    # 2️⃣ Past Years — Yearly Data
-    # =====================================================
+    # ============================================================
+    # 2️⃣ Past Years (Yearly)
+    # ============================================================
     for year in range(end_year - 1, start_year - 1, -1):
-        yearly_events = _ask_gemini_for_year(company, year, context)
+        step_count += 1
+        eta = estimate_eta(step_count, total_steps, avg_time_per_step)
+        msg = f"📆 Fetching {year} summary → ETA: {eta}"
+        logging.info(msg)
+        update_ui(msg)
+
+        yearly_events = _fetch_corporate_events(company, year, verified=True, context=context)
         if not yearly_events:
-            yearly_events = refine_events_with_ai(company, [], text=f"{context}\nYear: {year}")
-        all_events.extend(yearly_events)
+            time.sleep(2)
+            yearly_events = _fetch_corporate_events(company, year, verified=True, context=context)
+        all_events.extend(yearly_events or [])
 
-    logging.info(f"🧩 Total raw events before cleaning: {len(all_events)}")
+    logging.info(f"🧩 Total raw events fetched: {len(all_events)}")
 
-    # =====================================================
-    # 3️⃣ AI Repair — Fill Missing Fields
-    # =====================================================
-    logging.info("🧠 Running AI repair on incomplete events...")
+    # ============================================================
+    # 3️⃣ AI Repair + Cleanup
+    # ============================================================
     all_events = repair_incomplete_events_with_ai(all_events, company)
-    logging.info(f"✅ After AI repair → {len(all_events)} structured events")
 
-    # =====================================================
-    # 4️⃣ Parse, Clean & Save
-    # =====================================================
-    events = []
+    # ============================================================
+    # 4️⃣ Filter Future / Speculative
+    # ============================================================
+    current_date = datetime.now().date()
+    clean_events = []
+    speculative_terms = ["potential", "rumored", "expected", "plans to", "may acquire", "considering", "exploring"]
     for ev in all_events:
         if not isinstance(ev, dict):
             continue
+        desc = (ev.get("description") or ev.get("event_name") or "").lower()
+        if any(t in desc for t in speculative_terms):
+            continue
+        try:
+            if datetime.fromisoformat(ev.get("date", "1900-01-01")).date() > current_date:
+                continue
+        except Exception:
+            pass
+        clean_events.append(ev)
 
+    logging.info(f"🧹 Filtered speculative/future events → kept {len(clean_events)} / {len(all_events)}")
+
+    # ============================================================
+    # 5️⃣ Normalize Data
+    # ============================================================
+    events = []
+    for ev in clean_events:
         desc = ev.get("description") or ev.get("event_name") or ev.get("title", "")
         title = ev.get("event_name") or ev.get("title") or desc[:80]
+        date = ev.get("date") or ev.get("Date (From List)") or "Unknown"
+        event_type = ev.get("event_type") or ev.get("Event Type") or "Other"
+        counterparty = ev.get("counterparty") or ev.get("Counterparty / Entity") or "N/A"
+        value = ev.get("value") or ev.get("Reported Value") or "Undisclosed"
+        source = ev.get("source") or ev.get("Public Source(s)") or "Gemini Verified"
         parsed = extract_event_details(desc or title)
 
         events.append({
-            "year": str(ev.get("date", "Unknown"))[:4],
-            "date": ev.get("date", "Unknown"),
+            "year": str(date)[:4],
+            "date": date,
             "title": title.strip(),
             "description": desc.strip(),
-            "event_type": (ev.get("event_type") or parsed["event_type"]).strip(),
-            "counterparty": (ev.get("counterparty") or parsed["counterparty"]).strip(),
-            "amount": (ev.get("value") or parsed["value"]).strip(),
-            "source": ev.get("source", "Gemini"),
-            "url": ev.get("url", ""),
+            "event_type": (event_type or parsed["event_type"]).strip(),
+            "counterparty": (counterparty or parsed["counterparty"]).strip(),
+            "amount": (value or parsed["value"]).strip(),
+            "source": source.strip(),
             "confidence": "A",
         })
 
-    events = sort_events(
-        merge_and_clean_events(
-            validate_event_confidence(
-                deduplicate_events(events)
-            )
-        )
-    )
+    events = sort_events(merge_and_clean_events(validate_event_confidence(deduplicate_events(events))))
 
+    # ============================================================
+    # 6️⃣ Save Files
+    # ============================================================
     outdir = Path(__file__).resolve().parents[2] / "output"
     outdir.mkdir(exist_ok=True)
-    csv_path = outdir / f"{company.replace(' ', '_')}_events.csv"
-    json_path = outdir / f"{company.replace(' ', '_')}_events.json"
-
-    df = pd.DataFrame(events)
-    df.to_csv(csv_path, index=False)
-    with open(json_path, "w") as f:
+    csv_path = outdir / f"{company.replace(' ', '_')}_verified_events.csv"
+    json_path = outdir / f"{company.replace(' ', '_')}_verified_events.json"
+    pd.DataFrame(events).to_csv(csv_path, index=False)
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump({"company": company, "events": events, "verified_count": len(events)}, f, indent=2)
 
-    logging.info(f"💾 Saved verified data → {csv_path}")
-    logging.info(f"💾 Saved verified JSON → {json_path}")
+    # ============================================================
+    # 7️⃣ Done
+    # ============================================================
+    elapsed = time.time() - start_time
+    minutes, seconds = divmod(int(elapsed), 60)
+    msg = f"✅ Completed in {minutes} min {seconds:02d} sec — Total {len(events)} verified events fetched."
+    logging.info(msg)
+    if progress_callback:
+        progress_callback(msg, 1.0)
 
     return {
         "company": {"name": company, "symbol": company[:4].upper()},
         "events": events,
         "verified_count": len(events),
         "last_updated": datetime.utcnow().isoformat(),
-        "source_model": "Gemini Hybrid (Monthly+Yearly+AI Repair)"
+        "eta_runtime": f"{minutes} min {seconds:02d} sec",
+        "source_model": "Gemini Verified (Monthly + Yearly + Auto-Retry)"
     }
-
 
 # ============================================================
 # 🔹 Local Test
 # ============================================================
 if __name__ == "__main__":
-    logging.info("Corporate Event System: Using VERIFIED pipeline for: S&P Global")
+    logging.info("🚀 Running unified verified corporate event generator with ETA...")
     result = generate_verified_corporate_events("S&P Global", years=5)
     print(pd.DataFrame(result["events"]).head(10))

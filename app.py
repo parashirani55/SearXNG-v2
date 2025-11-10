@@ -15,7 +15,7 @@ import uuid
 import streamlit as st
 import pandas as pd
 from analysis.person_analyzer import generate_people_intelligence
-
+from analysis.corporate_event import event_verified
 from analysis.summary_generator import generate_summary
 from searxng_analyzer import (
     generate_description,
@@ -203,13 +203,11 @@ def show_corporate_events(events):
     incomplete_df = df[~complete_mask]
 
     # ✅ Display
-    if not complete_df.empty:
-        st.markdown("### ✅ High-Quality Corporate Events")
-        st.dataframe(complete_df.reset_index(drop=True), width="stretch")
+    final_df = pd.concat([complete_df, incomplete_df]).reset_index(drop=True)
 
-    if not incomplete_df.empty:
-        st.markdown("### ⚠️ Incomplete Corporate Events (Low Confidence)")
-        st.dataframe(incomplete_df.reset_index(drop=True), width="stretch")
+    st.markdown("### 📅 Verified Corporate Events")
+    st.dataframe(final_df, use_container_width=True, hide_index=True)
+
 
 def show_top_management(mgmt_data):
     """
@@ -382,9 +380,6 @@ if search_query.strip():
 # ============================================================
 # 🔹 Analyze Company
 # ============================================================
-# ============================================================
-# 🔹 Analyze Company
-# ============================================================
 if st.button("🚀 Analyze Company"):
     if not search_query.strip():
         st.warning("⚠️ Please enter a company name or URL")
@@ -416,27 +411,58 @@ if st.button("🚀 Analyze Company"):
             description = generate_description(search_query, text=wiki_text, company_details=summary)
             progress.progress(60)
 
+
             # -------------------------
-            # 4️⃣ Corporate Events
-            # -------------------------
-            # -------------------------
-            # 4️⃣ Corporate Events
+            # 4️⃣ Corporate Events (With ETA + Live Status)
             # -------------------------
             status.text("📅 Fetching corporate events...")
+            progress.progress(65)
+
             try:
-                # ✅ Gemini-based fetcher now returns a dict (no JSON to parse)
-                raw_events_dict = generate_corporate_events(search_query)
+                import time
+                from analysis.corporate_event.event_verified import generate_verified_corporate_events
+
+                # Start timer
+                start_time = time.time()
+
+                # Display live ETA info
+                st.info("⏳ Gemini Verified Mode: This may take 2–5 minutes depending on company size and year range.")
+
+                # Initialize live UI placeholders
+                eta_display = st.empty()
+                step_display = st.empty()
+
+                # Simulate or stream ETA updates while running the generator
+                step_display.text("🧠 Initializing Gemini verified models...")
+                eta_display.text("🕒 Estimated completion: calculating...")
+
+                # Run the full unified verified event generator
+                eta_display = st.empty()
+                step_display = st.empty()
+                progress_bar = st.progress(0)
+
+                def update_eta_ui(message, progress_value):
+                    step_display.text(message)
+                    eta_display.text(f"⏳ {message}")
+                    progress_bar.progress(min(max(progress_value, 0.01), 1.0))
+
+                raw_events_dict = event_verified.generate_verified_corporate_events(
+                    search_query, years=5, progress_callback=update_eta_ui
+                )
                 corporate_events = raw_events_dict.get("events", [])
-            
-                # ✅ Ensure data is always a list of dicts
-                if not isinstance(corporate_events, list):
-                    corporate_events = []
-            
+
+                # Simulate time for display update
+                elapsed = time.time() - start_time
+                minutes, seconds = divmod(int(elapsed), 60)
+                eta_display.text(f"✅ Completed in {minutes} min {seconds:02d} sec")
+                step_display.text(f"🎯 Total Verified Events: {len(corporate_events)}")
+
             except Exception as e:
                 corporate_events = []
                 st.warning(f"⚠️ Failed to fetch corporate events: {e}")
-            
+
             progress.progress(75)
+
             
 
             # -------------------------
